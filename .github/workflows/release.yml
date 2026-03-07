@@ -20,22 +20,10 @@ jobs:
             artifact: linux_amd64.tar.gz
             format: tar.gz
             build_dir: build/linux/x64/release/bundle
-          - runner: ubuntu-24.04-arm
-            target: linux
-            arch: arm64
-            artifact: linux_arm64.tar.gz
-            format: tar.gz
-            build_dir: build/linux/arm64/release/bundle
-          - runner: macos-13
+          - runner: macos-latest
             target: darwin
             arch: amd64
             artifact: darwin_amd64.tar.gz
-            format: tar.gz
-            build_dir: build/macos/Build/Products/Release/cpaclient.app
-          - runner: macos-14
-            target: darwin
-            arch: arm64
-            artifact: darwin_arm64.tar.gz
             format: tar.gz
             build_dir: build/macos/Build/Products/Release/cpaclient.app
           - runner: windows-latest
@@ -44,12 +32,6 @@ jobs:
             artifact: windows_amd64.zip
             format: zip
             build_dir: build/windows/x64/runner/Release
-          - runner: windows-11-arm
-            target: windows
-            arch: arm64
-            artifact: windows_arm64.zip
-            format: zip
-            build_dir: build/windows/arm64/runner/Release
 
     runs-on: ${{ matrix.runner }}
 
@@ -59,6 +41,18 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+
+      - name: Install Linux desktop dependencies
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgtk-3-dev \
+            liblzma-dev
 
       - name: Flutter pub get
         run: flutter pub get

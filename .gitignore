@@ -11,6 +11,8 @@ Desktop.ini
 # IDE
 .idea/
 .vscode/
+*.iml
+
 
 # Dart / Flutter
 .dart_tool/
@@ -18,6 +20,11 @@ Desktop.ini
 .pub/
 build/
 coverage/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Claude Code
+.claude/
 
 # Local env
 .env
