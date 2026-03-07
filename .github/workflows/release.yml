@@ -73,6 +73,17 @@ jobs:
             libgtk-3-dev \
             liblzma-dev
 
+          if apt-cache show libayatana-appindicator3-dev >/dev/null 2>&1; then
+            sudo apt-get install -y libayatana-appindicator3-dev
+          elif apt-cache show libappindicator3-dev >/dev/null 2>&1; then
+            sudo apt-get install -y libappindicator3-dev
+          else
+            echo "No supported appindicator dev package found"
+            exit 1
+          fi
+
+          pkg-config --exists ayatana-appindicator3-0.1 || pkg-config --exists appindicator3-0.1
+
       - name: Flutter pub get
         run: flutter pub get
 
