@@ -1,0 +1,135 @@
+name: Release Desktop Builds
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux
+            arch: amd64
+            artifact: linux_amd64.tar.gz
+            format: tar.gz
+            build_dir: build/linux/x64/release/bundle
+          - runner: ubuntu-24.04-arm
+            target: linux
+            arch: arm64
+            artifact: linux_arm64.tar.gz
+            format: tar.gz
+            build_dir: build/linux/arm64/release/bundle
+          - runner: macos-13
+            target: darwin
+            arch: amd64
+            artifact: darwin_amd64.tar.gz
+            format: tar.gz
+            build_dir: build/macos/Build/Products/Release/cpaclient.app
+          - runner: macos-14
+            target: darwin
+            arch: arm64
+            artifact: darwin_arm64.tar.gz
+            format: tar.gz
+            build_dir: build/macos/Build/Products/Release/cpaclient.app
+          - runner: windows-latest
+            target: windows
+            arch: amd64
+            artifact: windows_amd64.zip
+            format: zip
+            build_dir: build/windows/x64/runner/Release
+          - runner: windows-11-arm
+            target: windows
+            arch: arm64
+            artifact: windows_arm64.zip
+            format: zip
+            build_dir: build/windows/arm64/runner/Release
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Linux
+        if: matrix.target == 'linux'
+        run: flutter build linux --release
+
+      - name: Build macOS
+        if: matrix.target == 'darwin'
+        run: flutter build macos --release
+
+      - name: Build Windows
+        if: matrix.target == 'windows'
+        run: flutter build windows --release
+
+      - name: Verify build output (linux/macos)
+        if: matrix.format == 'tar.gz'
+        shell: bash
+        run: |
+          if [ ! -e "${{ matrix.build_dir }}" ]; then
+            echo "Build output not found: ${{ matrix.build_dir }}"
+            exit 1
+          fi
+
+      - name: Package artifact (linux/macos)
+        if: matrix.format == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -r "${{ matrix.build_dir }}" dist/
+          tar -czf "${{ matrix.artifact }}" -C dist .
+
+      - name: Verify build output (windows)
+        if: matrix.format == 'zip'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${{ matrix.build_dir }}")) {
+            Write-Error "Build output not found: ${{ matrix.build_dir }}"
+          }
+
+      - name: Package artifact (windows)
+        if: matrix.format == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -Recurse -Force "${{ matrix.build_dir }}/*" dist/
+          Compress-Archive -Path dist/* -DestinationPath "${{ matrix.artifact }}" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Gather artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} release/ \;
+          ls -lah release
+
+      - name: Upload to GitHub release/tag assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes "Automated release for ${GITHUB_REF_NAME}" || true
+          gh release upload "${GITHUB_REF_NAME}" release/* --clobber

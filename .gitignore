@@ -1,0 +1,53 @@
+# General
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+
+# Dart / Flutter
+.dart_tool/
+.packages
+.pub/
+build/
+coverage/
+
+# Local env
+.env
+.env.*
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/App.framework
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/ephemeral/
+ios/Flutter/flutter_export_environment.sh
+ios/Flutter/.last_build_id
+
+# macOS
+macos/Flutter/ephemeral/
+macos/Flutter/generated_config.cmake
+
+# Linux
+linux/flutter/ephemeral/
+
+# Windows
+windows/flutter/ephemeral/
+
+# FVM (optional)
+.fvm/
