@@ -66,6 +66,7 @@ jobs:
         if: ${{ matrix.target == 'linux' && matrix.arch == 'arm64' }}
         run: |
           git clone https://github.com/flutter/flutter.git --depth 1 --branch 3.35.5 "$HOME/flutter"
+          export PATH="$HOME/flutter/bin:$PATH"
           echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
           flutter --version
 
