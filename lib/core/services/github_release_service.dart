@@ -21,7 +21,7 @@ class GithubReleaseService {
   }
 
   Future<List<String>> fetchRecentVersions({
-    required String githubToken,
+    String githubToken = '',
     int limit = 20,
   }) async {
     await _log.info('GitHub release versions lookup start: limit=$limit');

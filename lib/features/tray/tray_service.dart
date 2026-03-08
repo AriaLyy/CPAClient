@@ -11,15 +11,18 @@ class TrayService with TrayListener {
   TrayService({
     required SandboxConfigService sandboxConfig,
     required Future<void> Function() onOpenSettings,
+    required Future<void> Function() onStopCore,
     required Future<void> Function() onExit,
     required AppLogService log,
   })  : _sandboxConfig = sandboxConfig,
         _onOpenSettings = onOpenSettings,
+        _onStopCore = onStopCore,
         _onExit = onExit,
         _log = log;
 
   final SandboxConfigService _sandboxConfig;
   final Future<void> Function() _onOpenSettings;
+  final Future<void> Function() _onStopCore;
   final Future<void> Function() _onExit;
   final AppLogService _log;
 
@@ -38,6 +41,7 @@ class TrayService with TrayListener {
       Menu(items: [
         MenuItem(key: 'webui', label: 'WebUI'),
         MenuItem(key: 'settings', label: '设置'),
+        MenuItem(key: 'stop_core', label: '停止核心'),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: '退出'),
       ]),
@@ -76,7 +80,6 @@ class TrayService with TrayListener {
   @override
   void onTrayIconRightMouseUp() {
     unawaited(_log.info('Tray right mouse up'));
-    unawaited(trayManager.popUpContextMenu());
   }
 
   @override
@@ -88,6 +91,9 @@ class TrayService with TrayListener {
         break;
       case 'settings':
         await _onOpenSettings();
+        break;
+      case 'stop_core':
+        await _onStopCore();
         break;
       case 'quit':
         await _onExit();

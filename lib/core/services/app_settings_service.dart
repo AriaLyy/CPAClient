@@ -55,6 +55,7 @@ class AppSettingsService {
         'webdavUrl': settings.webdavUrl,
         'webdavUsername': settings.webdavUsername,
         'webdavPassword': settings.webdavPassword,
+        'webuiSecretKey': settings.webuiSecretKey,
       },
       key: key,
     );
@@ -63,6 +64,9 @@ class AppSettingsService {
       'schemaVersion': _schemaVersion,
       'coreVersion': settings.coreVersion,
       'themeMode': settings.themeMode,
+      'keepGithubToken': settings.keepGithubToken,
+      'webdavAutoBackupEnabled': settings.webdavAutoBackupEnabled,
+      'webdavAutoBackupIntervalMinutes': settings.webdavAutoBackupIntervalMinutes,
       'secrets': {
         ...encrypted,
         'keyRef': _keyId,
@@ -94,6 +98,10 @@ class AppSettingsService {
         webdavUrl: (decrypted['webdavUrl'] as String?) ?? '',
         webdavUsername: (decrypted['webdavUsername'] as String?) ?? '',
         webdavPassword: (decrypted['webdavPassword'] as String?) ?? '',
+        webuiSecretKey: (decrypted['webuiSecretKey'] as String?) ?? '',
+        keepGithubToken: (map['keepGithubToken'] as bool?) ?? true,
+        webdavAutoBackupEnabled: (map['webdavAutoBackupEnabled'] as bool?) ?? false,
+        webdavAutoBackupIntervalMinutes: (map['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
       );
     } catch (_) {
       return AppSettings.defaults()
@@ -110,6 +118,7 @@ class AppSettingsService {
     return map.containsKey('githubToken') ||
         map.containsKey('webdavUrl') ||
         map.containsKey('webdavUsername') ||
-        map.containsKey('webdavPassword');
+        map.containsKey('webdavPassword') ||
+        map.containsKey('webuiSecretKey');
   }
 }

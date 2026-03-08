@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -18,6 +19,8 @@ enum WebdavStatusLevel { idle, running, success, failure }
 class SettingsController extends ChangeNotifier {
   SettingsController();
 
+  static const String _usageJsonFileName = 'usage.json';
+
   AppSettings settings = AppSettings.defaults();
   bool launchAtStartupEnabled = false;
   String lastStatus = '';
@@ -26,6 +29,7 @@ class SettingsController extends ChangeNotifier {
   List<String> recentVersions = const [];
   WebdavStatusLevel webdavStatusLevel = WebdavStatusLevel.idle;
   String webdavStatusText = '尚未测试 WebDAV 连接';
+  bool _webdavBackupInProgress = false;
 
   ThemeMode get themeMode {
     switch (settings.themeMode) {
@@ -41,6 +45,7 @@ class SettingsController extends ChangeNotifier {
   Future<void> load() async {
     settings = await AppServices.settings.load();
     await refreshRecentVersions();
+    _restartWebdavAutoBackupTimer();
 
     var startupReady = true;
     try {
@@ -61,10 +66,22 @@ class SettingsController extends ChangeNotifier {
       launchAtStartupEnabled = false;
     }
     currentPort = await AppServices.sandboxConfig.readPort();
-    webuiPassword = await AppServices.sandboxConfig.readSecretKey();
+    webuiPassword = settings.webuiSecretKey;
     _startStatusPolling();
     if (startupReady) {
       lastStatus = '';
+    }
+
+    if (settings.webdavUrl.trim().isEmpty) {
+      _setWebdavStatus(WebdavStatusLevel.idle, '尚未测试 WebDAV 连接');
+    } else {
+      unawaited(
+        testWebdavConnection(
+          url: settings.webdavUrl,
+          username: settings.webdavUsername,
+          password: settings.webdavPassword,
+        ),
+      );
     }
   }
 
@@ -112,8 +129,30 @@ class SettingsController extends ChangeNotifier {
       webdavPassword: password,
     );
     await AppServices.settings.save(settings);
+    _restartWebdavAutoBackupTimer();
     notifyListeners();
     return 'WebDAV 设置已保存: $normalizedUrl';
+  }
+
+  Future<String> saveKeepGithubToken(bool enabled) async {
+    settings = settings.copyWith(
+      keepGithubToken: enabled,
+      githubToken: enabled ? settings.githubToken : '',
+    );
+    await AppServices.settings.save(settings);
+    if (!enabled) {
+      await refreshRecentVersions();
+    }
+    notifyListeners();
+    return enabled ? '已开启保持 Token（本地加密保存）' : '已关闭保持 Token，Token 已清空';
+  }
+
+  Future<String> saveWebdavAutoBackupEnabled(bool enabled) async {
+    settings = settings.copyWith(webdavAutoBackupEnabled: enabled);
+    await AppServices.settings.save(settings);
+    _restartWebdavAutoBackupTimer();
+    notifyListeners();
+    return enabled ? '已开启 WebDAV 自动备份（每小时）' : '已关闭 WebDAV 自动备份';
   }
 
   Future<void> reloadWebdavSettings() async {
@@ -161,19 +200,38 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<String> backupConfigToWebdav() async {
-    if (settings.webdavUrl.trim().isEmpty) {
-      const msg = '请先填写 WebDAV 地址';
-      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+    return _performWebdavBackup(isAuto: false);
+  }
+
+  Future<String> _performWebdavBackup({required bool isAuto}) async {
+    if (_webdavBackupInProgress) {
+      const msg = '已有备份任务正在执行，已跳过';
+      await AppServices.log.info('WebDAV backup skipped: in-progress, isAuto=$isAuto');
       return msg;
     }
-    _setWebdavStatus(WebdavStatusLevel.running, '正在备份配置...');
+    if (settings.webdavUrl.trim().isEmpty) {
+      const msg = '请先填写 WebDAV 地址';
+      if (!isAuto) {
+        _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      }
+      await AppServices.log.info('WebDAV backup skipped: empty url, isAuto=$isAuto');
+      return msg;
+    }
+    if (!isAuto) {
+      _setWebdavStatus(WebdavStatusLevel.running, '正在备份配置...');
+    }
+    _webdavBackupInProgress = true;
     try {
       final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
       final authDir = await AppServices.sandboxConfig.readAuthDir();
       final authRoot = AppServices.paths.resolveAuthDir(authDir);
       final authJsonFiles = _listRootJsonFiles(authRoot);
+      final usageJsonPath = p.join(cfg.parent.path, _usageJsonFileName);
+      final port = await AppServices.sandboxConfig.readPort();
+      final secretKey = await _resolveManagementKeyForUsage();
+      await _exportUsageJson(localUsageJsonPath: usageJsonPath, port: port, secretKey: secretKey);
       await AppServices.log.info(
-        'WebDAV backup start: url=${settings.webdavUrl} local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length}',
+        'WebDAV backup start: url=${settings.webdavUrl} local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length} usage=$usageJsonPath isAuto=$isAuto',
       );
       final client = newClient(
         settings.webdavUrl,
@@ -188,6 +246,7 @@ class SettingsController extends ChangeNotifier {
           localAuthDir: authRoot,
           localJsonFiles: authJsonFiles,
         );
+        await _writeUsageJsonToWebdav(client: client, localUsageJsonPath: usageJsonPath);
       } catch (e) {
         if (_shouldTryParentFallback(e)) {
           await _writeConfigToWebdavFromParent(localConfigPath: cfg.path);
@@ -195,20 +254,25 @@ class SettingsController extends ChangeNotifier {
             localAuthDir: authRoot,
             localJsonFiles: authJsonFiles,
           );
+          await _writeUsageJsonToWebdavFromParent(localUsageJsonPath: usageJsonPath);
         } else {
           rethrow;
         }
       }
-      await AppServices.log.info('WebDAV backup success: config.yaml + auth-json');
-      final msg = '已备份 config.yaml + auth-json(${authJsonFiles.length})';
-      _setWebdavStatus(WebdavStatusLevel.success, msg);
+      final msg = '已备份 config.yaml + auth-json(${authJsonFiles.length}) + usage.json';
+      await AppServices.log.info('WebDAV backup success: $msg, isAuto=$isAuto');
+      if (!isAuto) {
+        _setWebdavStatus(WebdavStatusLevel.success, msg);
+      }
       return msg;
     } catch (e) {
-      await AppServices.log.error('WebDAV backup failed', _formatDioError(e));
+      await AppServices.log.error('WebDAV backup failed, isAuto=$isAuto', _formatDioError(e));
       final logPath = await AppServices.log.logFilePath();
       final msg = 'WebDAV 备份失败: $e\n日志: $logPath';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
+    } finally {
+      _webdavBackupInProgress = false;
     }
   }
 
@@ -223,8 +287,9 @@ class SettingsController extends ChangeNotifier {
       final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
       final authDir = await AppServices.sandboxConfig.readAuthDir();
       final authRoot = AppServices.paths.resolveAuthDir(authDir);
+      final usageJsonPath = p.join(cfg.parent.path, _usageJsonFileName);
       await AppServices.log.info(
-        'WebDAV restore start: url=${settings.webdavUrl} local=${cfg.path} restoreTo=${authRoot.path}',
+        'WebDAV restore start: url=${settings.webdavUrl} local=${cfg.path} restoreTo=${authRoot.path} usage=$usageJsonPath',
       );
       final client = newClient(
         settings.webdavUrl,
@@ -241,21 +306,31 @@ class SettingsController extends ChangeNotifier {
           remoteAuthJsonRoot: CoreDefaults.webdavAuthJsonDirName,
           logPrefix: 'WebDAV restore auth-json',
         );
+        await _readUsageJsonFromWebdav(client: client, localUsageJsonPath: usageJsonPath);
       } catch (e) {
         if (_shouldTryParentFallback(e)) {
           await _readConfigFromWebdavFromParent(localConfigPath: cfg.path);
           restoredJsonCount = await _readAuthJsonFromWebdavFromParent(
             localAuthDir: authRoot,
           );
+          await _readUsageJsonFromWebdavFromParent(localUsageJsonPath: usageJsonPath);
         } else {
           rethrow;
         }
       }
       await _restartCoreAfterRestore();
-      currentPort = await AppServices.sandboxConfig.readPort();
+      final restoredPort = await AppServices.sandboxConfig.readPort();
+      final restoredSecretKey = await _resolveManagementKeyForUsage();
+      await _importUsageJson(
+        localUsageJsonPath: usageJsonPath,
+        port: restoredPort,
+        secretKey: restoredSecretKey,
+      );
+      currentPort = restoredPort;
+      webuiPassword = restoredSecretKey;
       notifyListeners();
-      await AppServices.log.info('WebDAV restore success: config.yaml + auth-json($restoredJsonCount)');
-      final msg = '已还原 config.yaml + auth-json($restoredJsonCount)，并重启核心';
+      await AppServices.log.info('WebDAV restore success: config.yaml + auth-json($restoredJsonCount) + usage.json');
+      final msg = '已还原 config.yaml + auth-json($restoredJsonCount) + usage.json，并重启核心';
       _setWebdavStatus(WebdavStatusLevel.success, msg);
       return msg;
     } catch (e) {
@@ -290,6 +365,18 @@ class SettingsController extends ChangeNotifier {
     );
   }
 
+  Future<void> _writeUsageJsonToWebdav({
+    required dynamic client,
+    required String localUsageJsonPath,
+  }) async {
+    await _writeUsageJsonWithCandidates(
+      client: client,
+      localUsageJsonPath: localUsageJsonPath,
+      remoteCandidates: const [_usageJsonFileName, '/$_usageJsonFileName'],
+      logPrefix: 'WebDAV backup usage-json',
+    );
+  }
+
   Future<void> _writeConfigToWebdavFromParent({required String localConfigPath}) async {
     final parentUrl = _parentWebdavUrl(settings.webdavUrl);
     if (parentUrl == settings.webdavUrl) {
@@ -315,6 +402,31 @@ class SettingsController extends ChangeNotifier {
     );
   }
 
+  Future<void> _writeUsageJsonToWebdavFromParent({required String localUsageJsonPath}) async {
+    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
+    if (parentUrl == settings.webdavUrl) {
+      throw Exception('父级 WebDAV 地址未变化，无法执行回退写入 usage.json');
+    }
+    await AppServices.log.info('WebDAV backup usage-json fallback to parent url: $parentUrl');
+    final parentClient = newClient(
+      parentUrl,
+      user: settings.webdavUsername,
+      password: settings.webdavPassword,
+      debug: false,
+    );
+    await _writeUsageJsonWithCandidates(
+      client: parentClient,
+      localUsageJsonPath: localUsageJsonPath,
+      remoteCandidates: const [
+        'CpaClient/$_usageJsonFileName',
+        '/CpaClient/$_usageJsonFileName',
+        _usageJsonFileName,
+        '/$_usageJsonFileName',
+      ],
+      logPrefix: 'WebDAV backup(parent) usage-json',
+    );
+  }
+
   Future<void> _writeConfigWithCandidates({
     required dynamic client,
     required String localConfigPath,
@@ -334,6 +446,31 @@ class SettingsController extends ChangeNotifier {
       }
     }
     throw Exception('上传 config.yaml 失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
+  Future<void> _writeUsageJsonWithCandidates({
+    required dynamic client,
+    required String localUsageJsonPath,
+    required List<String> remoteCandidates,
+    required String logPrefix,
+  }) async {
+    final localFile = File(localUsageJsonPath);
+    if (!localFile.existsSync()) {
+      throw Exception('usage.json 不存在: $localUsageJsonPath');
+    }
+    Object? lastError;
+    for (final remotePath in remoteCandidates) {
+      try {
+        await AppServices.log.info('$logPrefix try path: $remotePath');
+        await client.writeFromFile(localUsageJsonPath, remotePath);
+        await AppServices.log.info('$logPrefix path success: $remotePath');
+        return;
+      } catch (e) {
+        lastError = e;
+        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
+      }
+    }
+    throw Exception('上传 usage.json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
   }
 
   Future<void> _writeAuthJsonToWebdav({
@@ -522,6 +659,18 @@ class SettingsController extends ChangeNotifier {
     );
   }
 
+  Future<void> _readUsageJsonFromWebdav({
+    required dynamic client,
+    required String localUsageJsonPath,
+  }) async {
+    await _readUsageJsonWithCandidates(
+      client: client,
+      localUsageJsonPath: localUsageJsonPath,
+      remoteCandidates: const [_usageJsonFileName, '/$_usageJsonFileName'],
+      logPrefix: 'WebDAV restore usage-json',
+    );
+  }
+
   Future<void> _readConfigFromWebdavFromParent({required String localConfigPath}) async {
     final parentUrl = _parentWebdavUrl(settings.webdavUrl);
     if (parentUrl == settings.webdavUrl) {
@@ -547,6 +696,31 @@ class SettingsController extends ChangeNotifier {
     );
   }
 
+  Future<void> _readUsageJsonFromWebdavFromParent({required String localUsageJsonPath}) async {
+    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
+    if (parentUrl == settings.webdavUrl) {
+      throw Exception('父级 WebDAV 地址未变化，无法执行回退读取 usage.json');
+    }
+    await AppServices.log.info('WebDAV restore usage-json fallback to parent url: $parentUrl');
+    final parentClient = newClient(
+      parentUrl,
+      user: settings.webdavUsername,
+      password: settings.webdavPassword,
+      debug: false,
+    );
+    await _readUsageJsonWithCandidates(
+      client: parentClient,
+      localUsageJsonPath: localUsageJsonPath,
+      remoteCandidates: const [
+        'CpaClient/$_usageJsonFileName',
+        '/CpaClient/$_usageJsonFileName',
+        _usageJsonFileName,
+        '/$_usageJsonFileName',
+      ],
+      logPrefix: 'WebDAV restore(parent) usage-json',
+    );
+  }
+
   Future<void> _readConfigWithCandidates({
     required dynamic client,
     required String localConfigPath,
@@ -566,6 +740,115 @@ class SettingsController extends ChangeNotifier {
       }
     }
     throw Exception('下载 config.yaml 失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
+  Future<void> _readUsageJsonWithCandidates({
+    required dynamic client,
+    required String localUsageJsonPath,
+    required List<String> remoteCandidates,
+    required String logPrefix,
+  }) async {
+    Object? lastError;
+    for (final remotePath in remoteCandidates) {
+      try {
+        await AppServices.log.info('$logPrefix try path: $remotePath');
+        await client.read2File(remotePath, localUsageJsonPath);
+        await AppServices.log.info('$logPrefix path success: $remotePath');
+        return;
+      } catch (e) {
+        lastError = e;
+        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
+      }
+    }
+    throw Exception('下载 usage.json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
+  Future<String> _resolveManagementKeyForUsage() async {
+    final key = settings.webuiSecretKey.trim();
+    if (key.isNotEmpty) {
+      return key;
+    }
+    throw Exception('导出 usage.json 失败: 请先在设置页保存 WebUI 密码（明文管理密钥）');
+  }
+
+  Future<void> _exportUsageJson({
+    required String localUsageJsonPath,
+    required int port,
+    required String secretKey,
+  }) async {
+    final key = secretKey.trim();
+    if (key.isEmpty) {
+      throw Exception('导出 usage.json 失败: config.yaml 未配置 remote-management.secret-key');
+    }
+    final uri = Uri.parse('http://127.0.0.1:$port/v0/management/usage/export');
+    await AppServices.log.info('Usage export start: uri=$uri output=$localUsageJsonPath');
+    final dio = Dio();
+    try {
+      final response = await dio.getUri<dynamic>(
+        uri,
+        options: Options(
+          headers: <String, String>{'X-Management-Key': key},
+          responseType: ResponseType.plain,
+        ),
+      );
+      final body = _responseBodyToText(response.data);
+      await File(localUsageJsonPath).writeAsString(body);
+      await AppServices.log.info('Usage export success: uri=$uri output=$localUsageJsonPath');
+    } on DioException catch (e) {
+      throw Exception('导出 usage.json 失败: ${_formatDioError(e)}');
+    } finally {
+      dio.close();
+    }
+  }
+
+  Future<void> _importUsageJson({
+    required String localUsageJsonPath,
+    required int port,
+    required String secretKey,
+  }) async {
+    final key = secretKey.trim();
+    if (key.isEmpty) {
+      throw Exception('导入 usage.json 失败: config.yaml 未配置 remote-management.secret-key');
+    }
+    final usageFile = File(localUsageJsonPath);
+    if (!usageFile.existsSync()) {
+      throw Exception('导入 usage.json 失败: 本地文件不存在 $localUsageJsonPath');
+    }
+    final uri = Uri.parse('http://127.0.0.1:$port/v0/management/usage/import');
+    await AppServices.log.info('Usage import start: uri=$uri input=$localUsageJsonPath');
+    final dio = Dio();
+    try {
+      final payload = await usageFile.readAsString();
+      await dio.postUri<dynamic>(
+        uri,
+        data: payload,
+        options: Options(
+          headers: <String, String>{
+            'X-Management-Key': key,
+            'Content-Type': 'application/json',
+          },
+          responseType: ResponseType.plain,
+        ),
+      );
+      await AppServices.log.info('Usage import success: uri=$uri input=$localUsageJsonPath');
+    } on DioException catch (e) {
+      throw Exception('导入 usage.json 失败: ${_formatDioError(e)}');
+    } finally {
+      dio.close();
+    }
+  }
+
+  String _responseBodyToText(dynamic data) {
+    if (data == null) {
+      return '';
+    }
+    if (data is String) {
+      return data;
+    }
+    if (data is List<int>) {
+      return utf8.decode(data);
+    }
+    return jsonEncode(data);
   }
 
   Future<void> _restartCoreAfterRestore() async {
@@ -676,16 +959,46 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> updateCore() async {
     try {
+      await AppServices.log.info('Core update requested: version=${settings.coreVersion}');
       await AppServices.startup.updateCore(
         version: settings.coreVersion,
         githubToken: settings.githubToken,
       );
       currentPort = await AppServices.sandboxConfig.readPort();
       notifyListeners();
+      await AppServices.log.info('Core update success: version=${settings.coreVersion}');
       return '核心更新完成并已重启';
     } catch (e) {
+      await AppServices.log.error('Core update failed: version=${settings.coreVersion}', e);
       final logPath = await AppServices.log.logFilePath();
       return '核心更新失败: $e\n日志: $logPath';
+    }
+  }
+
+  Future<String> restartCore() async {
+    try {
+      await AppServices.log.info('Core restart requested');
+      await AppServices.process.stop();
+      await AppServices.process.start();
+      currentPort = await AppServices.sandboxConfig.readPort();
+      notifyListeners();
+      await AppServices.log.info('Core restart success');
+      return '核心已重启';
+    } catch (e) {
+      await AppServices.log.error('Core restart failed', e);
+      final logPath = await AppServices.log.logFilePath();
+      return '重启核心失败: $e\n日志: $logPath';
+    }
+  }
+
+  Future<String> stopCore() async {
+    try {
+      await AppServices.process.stop();
+      notifyListeners();
+      return '核心已停止';
+    } catch (e) {
+      final logPath = await AppServices.log.logFilePath();
+      return '停止核心失败: $e\n日志: $logPath';
     }
   }
 
@@ -695,7 +1008,13 @@ class SettingsController extends ChangeNotifier {
     await AppServices.settings.save(settings);
     await refreshRecentVersions();
     notifyListeners();
-    return token.isEmpty ? 'GitHub Token 已清空' : 'GitHub Token 已保存';
+    if (token.isEmpty) {
+      return 'GitHub Token 已清空';
+    }
+    if (!settings.keepGithubToken) {
+      return 'GitHub Token 已保存（未开启保持 Token，重启后不会保留）';
+    }
+    return 'GitHub Token 已保存';
   }
 
   Future<String> saveThemeMode(ThemeMode mode) async {
@@ -717,6 +1036,8 @@ class SettingsController extends ChangeNotifier {
     }
     try {
       await AppServices.sandboxConfig.updateSecretKey(secret);
+      settings = settings.copyWith(webuiSecretKey: secret);
+      await AppServices.settings.save(settings);
       webuiPassword = secret;
       notifyListeners();
       return 'WebUI 密码已同步到 secret-key';
@@ -750,11 +1071,26 @@ class SettingsController extends ChangeNotifier {
   bool get isCoreRunning => AppServices.process.isRunning;
 
   Timer? _statusTimer;
+  Timer? _webdavAutoBackupTimer;
 
   void _startStatusPolling() {
     _statusTimer?.cancel();
     _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       notifyListeners();
+    });
+  }
+
+  void _restartWebdavAutoBackupTimer() {
+    _webdavAutoBackupTimer?.cancel();
+    _webdavAutoBackupTimer = null;
+    if (!settings.webdavAutoBackupEnabled) {
+      return;
+    }
+    final minutes = settings.webdavAutoBackupIntervalMinutes <= 0
+        ? 60
+        : settings.webdavAutoBackupIntervalMinutes;
+    _webdavAutoBackupTimer = Timer.periodic(Duration(minutes: minutes), (_) {
+      unawaited(_performWebdavBackup(isAuto: true));
     });
   }
 
@@ -784,6 +1120,8 @@ class SettingsController extends ChangeNotifier {
   Future<void> disposeController() async {
     _statusTimer?.cancel();
     _statusTimer = null;
+    _webdavAutoBackupTimer?.cancel();
+    _webdavAutoBackupTimer = null;
     await AppServices.startup.shutdown();
   }
 }

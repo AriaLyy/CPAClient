@@ -7,11 +7,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
 
-  const size = Size(460, 760);
   const options = WindowOptions(
-    size: size,
-    minimumSize: size,
-    maximumSize: size,
+    size: Size(1100, 860),
+    minimumSize: Size(980, 760),
     center: true,
     title: 'CPAClient',
   );

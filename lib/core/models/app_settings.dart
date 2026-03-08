@@ -6,6 +6,10 @@ class AppSettings {
     required this.webdavUrl,
     required this.webdavUsername,
     required this.webdavPassword,
+    required this.webuiSecretKey,
+    required this.keepGithubToken,
+    required this.webdavAutoBackupEnabled,
+    required this.webdavAutoBackupIntervalMinutes,
   });
 
   factory AppSettings.defaults() {
@@ -16,6 +20,10 @@ class AppSettings {
       webdavUrl: 'https://dav.jianguoyun.com/dav',
       webdavUsername: '',
       webdavPassword: '',
+      webuiSecretKey: '',
+      keepGithubToken: true,
+      webdavAutoBackupEnabled: false,
+      webdavAutoBackupIntervalMinutes: 60,
     );
   }
 
@@ -25,6 +33,10 @@ class AppSettings {
   final String webdavUrl;
   final String webdavUsername;
   final String webdavPassword;
+  final String webuiSecretKey;
+  final bool keepGithubToken;
+  final bool webdavAutoBackupEnabled;
+  final int webdavAutoBackupIntervalMinutes;
 
   AppSettings copyWith({
     String? coreVersion,
@@ -33,6 +45,10 @@ class AppSettings {
     String? webdavUrl,
     String? webdavUsername,
     String? webdavPassword,
+    String? webuiSecretKey,
+    bool? keepGithubToken,
+    bool? webdavAutoBackupEnabled,
+    int? webdavAutoBackupIntervalMinutes,
   }) {
     return AppSettings(
       coreVersion: coreVersion ?? this.coreVersion,
@@ -41,6 +57,11 @@ class AppSettings {
       webdavUrl: webdavUrl ?? this.webdavUrl,
       webdavUsername: webdavUsername ?? this.webdavUsername,
       webdavPassword: webdavPassword ?? this.webdavPassword,
+      webuiSecretKey: webuiSecretKey ?? this.webuiSecretKey,
+      keepGithubToken: keepGithubToken ?? this.keepGithubToken,
+      webdavAutoBackupEnabled: webdavAutoBackupEnabled ?? this.webdavAutoBackupEnabled,
+      webdavAutoBackupIntervalMinutes:
+          webdavAutoBackupIntervalMinutes ?? this.webdavAutoBackupIntervalMinutes,
     );
   }
 
@@ -52,6 +73,10 @@ class AppSettings {
       'webdavUrl': webdavUrl,
       'webdavUsername': webdavUsername,
       'webdavPassword': webdavPassword,
+      'webuiSecretKey': webuiSecretKey,
+      'keepGithubToken': keepGithubToken,
+      'webdavAutoBackupEnabled': webdavAutoBackupEnabled,
+      'webdavAutoBackupIntervalMinutes': webdavAutoBackupIntervalMinutes,
     };
   }
 
@@ -63,6 +88,10 @@ class AppSettings {
       webdavUrl: (json['webdavUrl'] as String?) ?? 'https://dav.jianguoyun.com/dav',
       webdavUsername: (json['webdavUsername'] as String?) ?? '',
       webdavPassword: (json['webdavPassword'] as String?) ?? '',
+      webuiSecretKey: (json['webuiSecretKey'] as String?) ?? '',
+      keepGithubToken: (json['keepGithubToken'] as bool?) ?? true,
+      webdavAutoBackupEnabled: (json['webdavAutoBackupEnabled'] as bool?) ?? false,
+      webdavAutoBackupIntervalMinutes: (json['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
     );
   }
 }

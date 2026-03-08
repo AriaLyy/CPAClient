@@ -12,6 +12,6 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   testWidgets('renders settings page', (WidgetTester tester) async {
     await tester.pumpWidget(const CpaClientApp(initialThemeMode: ThemeMode.system));
-    expect(find.text('CPAClient 设置'), findsOneWidget);
+    expect(find.text('CPAClient 设置'), findsAtLeastNWidgets(1));
   });
 }

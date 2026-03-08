@@ -66,9 +66,9 @@ class StartupService {
       return;
     }
 
-    if (githubToken.trim().isEmpty) {
-      await _log.error('Core binary prepare blocked: github token is empty');
-      throw Exception('请先在设置页填写 GitHub Token');
+    final token = githubToken.trim();
+    if (token.isEmpty) {
+      await _log.info('Core binary prepare: github token is empty, fallback to anonymous GitHub API');
     }
 
     await _log.info('Core binary prepare: version=$version force=$force');
