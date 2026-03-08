@@ -53,7 +53,7 @@ jobs:
           - runner: windows-11-arm
             target: windows
             arch: arm64
-            flutter_arch: arm64
+            flutter_arch: x64
             windows_target_platform: windows-arm64
             artifact: windows_arm64.zip
             format: zip
