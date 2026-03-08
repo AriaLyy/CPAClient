@@ -132,20 +132,37 @@ jobs:
           cp -r "${{ matrix.build_dir }}" dist/
           tar -czf "${{ matrix.artifact }}" -C dist .
 
-      - name: Verify build output (windows)
+      - name: Resolve build output (windows)
         if: matrix.format == 'zip'
         shell: pwsh
         run: |
-          if (-not (Test-Path "${{ matrix.build_dir }}")) {
-            Write-Error "Build output not found: ${{ matrix.build_dir }}"
+          $candidates = @(
+            "${{ matrix.build_dir }}",
+            "build/windows/arm64/runner/Release",
+            "build/windows/x64/runner/Release",
+            "build/windows/runner/Release"
+          ) | Select-Object -Unique
+
+          $resolved = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $resolved) {
+            Write-Host "Checked candidates:"
+            $candidates | ForEach-Object { Write-Host " - $_" }
+            Write-Host "Existing directories under build/windows (if any):"
+            if (Test-Path "build/windows") {
+              Get-ChildItem "build/windows" -Directory -Recurse | ForEach-Object { Write-Host " - $($_.FullName)" }
+            }
+            Write-Error "Build output not found for windows artifact packaging"
           }
+
+          "WINDOWS_BUILD_DIR=$resolved" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Resolved Windows build output: $resolved"
 
       - name: Package artifact (windows)
         if: matrix.format == 'zip'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item -Recurse -Force "${{ matrix.build_dir }}/*" dist/
+          Copy-Item -Recurse -Force "$env:WINDOWS_BUILD_DIR/*" dist/
           Compress-Archive -Path dist/* -DestinationPath "${{ matrix.artifact }}" -Force
 
       - uses: actions/upload-artifact@v4
