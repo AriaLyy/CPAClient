@@ -15,4 +15,8 @@ class CoreDefaults {
   static const String sandboxConfigFileName = 'config.yaml';
   static const String sandboxSettingsName = 'app_settings.json';
   static const String sandboxLogFileName = 'app.log';
+
+  static const String defaultAuthDir = '~/.cli-proxy-api';
+  static const String webdavAuthJsonDirName = 'auth-json';
+  static const String webdavAuthJsonIndexName = 'index.json';
 }

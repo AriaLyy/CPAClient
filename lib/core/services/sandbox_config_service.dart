@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:cpaclient/core/constants/core_defaults.dart';
 import 'package:cpaclient/core/services/sandbox_path_service.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:yaml/yaml.dart';
@@ -13,9 +14,43 @@ class SandboxConfigService {
     final configFile = await _paths.sandboxConfigFile();
     if (!configFile.existsSync()) {
       final content = await rootBundle.loadString('configs/config.yaml');
-      await configFile.writeAsString(content);
+      final next = _rewriteDefaultAuthDir(content);
+      await configFile.writeAsString(next);
+      return configFile;
+    }
+
+    final content = await configFile.readAsString();
+    final next = _ensureAuthDirCompatible(content);
+    if (next != content) {
+      await configFile.writeAsString(next);
     }
     return configFile;
+  }
+
+  String _rewriteDefaultAuthDir(String content) {
+    const replacement = 'auth-dir: "${CoreDefaults.defaultAuthDir}"';
+    final pattern = RegExp(r'^\s*auth-dir:\s*.*$', multiLine: true);
+    if (pattern.hasMatch(content)) {
+      return content.replaceFirst(pattern, replacement);
+    }
+    return '$content\n$replacement\n';
+  }
+
+  String _ensureAuthDirCompatible(String content) {
+    final pattern = RegExp(r'^\s*auth-dir:\s*(.*)$', multiLine: true);
+    final match = pattern.firstMatch(content);
+    const replacement = 'auth-dir: "${CoreDefaults.defaultAuthDir}"';
+
+    if (match == null) {
+      return '$content\n$replacement\n';
+    }
+
+    final value = (match.group(1) ?? '').trim();
+    final isEmpty = value.isEmpty || value == '""' || value == "''";
+    if (!isEmpty) {
+      return content;
+    }
+    return content.replaceFirst(pattern, replacement);
   }
 
   Future<int> readPort() async {
@@ -56,5 +91,18 @@ class SandboxConfigService {
     }
     final next = content.replaceFirst(pattern, replacement);
     await configFile.writeAsString(next);
+  }
+
+  Future<String> readAuthDir() async {
+    final configFile = await ensureSandboxConfig();
+    final content = await configFile.readAsString();
+    final yaml = loadYaml(content);
+    if (yaml is YamlMap && yaml['auth-dir'] != null) {
+      final value = yaml['auth-dir'].toString().trim();
+      if (value.isNotEmpty) {
+        return value;
+      }
+    }
+    return CoreDefaults.defaultAuthDir;
   }
 }

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import 'package:cpaclient/core/constants/core_defaults.dart';
 import 'package:cpaclient/core/models/app_settings.dart';
 import 'package:cpaclient/core/services/app_services.dart';
@@ -9,7 +11,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:webdav_client/webdav_client.dart';
+import 'package:webdav_client/webdav_client.dart' hide File;
 
 enum WebdavStatusLevel { idle, running, success, failure }
 
@@ -167,7 +169,12 @@ class SettingsController extends ChangeNotifier {
     _setWebdavStatus(WebdavStatusLevel.running, '正在备份配置...');
     try {
       final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
-      await AppServices.log.info('WebDAV backup start: url=${settings.webdavUrl} local=${cfg.path}');
+      final authDir = await AppServices.sandboxConfig.readAuthDir();
+      final authRoot = AppServices.paths.resolveAuthDir(authDir);
+      final authJsonFiles = _listRootJsonFiles(authRoot);
+      await AppServices.log.info(
+        'WebDAV backup start: url=${settings.webdavUrl} local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length}',
+      );
       final client = newClient(
         settings.webdavUrl,
         user: settings.webdavUsername,
@@ -176,20 +183,30 @@ class SettingsController extends ChangeNotifier {
       );
       try {
         await _writeConfigToWebdav(client: client, localConfigPath: cfg.path);
+        await _writeAuthJsonToWebdav(
+          client: client,
+          localAuthDir: authRoot,
+          localJsonFiles: authJsonFiles,
+        );
       } catch (e) {
         if (_shouldTryParentFallback(e)) {
           await _writeConfigToWebdavFromParent(localConfigPath: cfg.path);
+          await _writeAuthJsonToWebdavFromParent(
+            localAuthDir: authRoot,
+            localJsonFiles: authJsonFiles,
+          );
         } else {
           rethrow;
         }
       }
-      await AppServices.log.info('WebDAV backup success');
-      const msg = '已备份到 config.yaml';
+      await AppServices.log.info('WebDAV backup success: config.yaml + auth-json');
+      final msg = '已备份 config.yaml + auth-json(${authJsonFiles.length})';
       _setWebdavStatus(WebdavStatusLevel.success, msg);
       return msg;
     } catch (e) {
       await AppServices.log.error('WebDAV backup failed', _formatDioError(e));
-      final msg = 'WebDAV 备份失败: $e';
+      final logPath = await AppServices.log.logFilePath();
+      final msg = 'WebDAV 备份失败: $e\n日志: $logPath';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
     }
@@ -204,34 +221,61 @@ class SettingsController extends ChangeNotifier {
     _setWebdavStatus(WebdavStatusLevel.running, '正在还原配置...');
     try {
       final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
-      await AppServices.log.info('WebDAV restore start: url=${settings.webdavUrl} local=${cfg.path}');
+      final authDir = await AppServices.sandboxConfig.readAuthDir();
+      final authRoot = AppServices.paths.resolveAuthDir(authDir);
+      await AppServices.log.info(
+        'WebDAV restore start: url=${settings.webdavUrl} local=${cfg.path} restoreTo=${authRoot.path}',
+      );
       final client = newClient(
         settings.webdavUrl,
         user: settings.webdavUsername,
         password: settings.webdavPassword,
         debug: false,
       );
+      int restoredJsonCount = 0;
       try {
         await _readConfigFromWebdav(client: client, localConfigPath: cfg.path);
+        restoredJsonCount = await _readAuthJsonFromWebdav(
+          client: client,
+          localAuthDir: authRoot,
+          remoteAuthJsonRoot: CoreDefaults.webdavAuthJsonDirName,
+          logPrefix: 'WebDAV restore auth-json',
+        );
       } catch (e) {
         if (_shouldTryParentFallback(e)) {
           await _readConfigFromWebdavFromParent(localConfigPath: cfg.path);
+          restoredJsonCount = await _readAuthJsonFromWebdavFromParent(
+            localAuthDir: authRoot,
+          );
         } else {
           rethrow;
         }
       }
+      await _restartCoreAfterRestore();
       currentPort = await AppServices.sandboxConfig.readPort();
       notifyListeners();
-      await AppServices.log.info('WebDAV restore success');
-      const msg = '已从 config.yaml 还原';
+      await AppServices.log.info('WebDAV restore success: config.yaml + auth-json($restoredJsonCount)');
+      final msg = '已还原 config.yaml + auth-json($restoredJsonCount)，并重启核心';
       _setWebdavStatus(WebdavStatusLevel.success, msg);
       return msg;
     } catch (e) {
       await AppServices.log.error('WebDAV restore failed', _formatDioError(e));
-      final msg = 'WebDAV 还原失败: $e';
+      final logPath = await AppServices.log.logFilePath();
+      final msg = 'WebDAV 还原失败: $e\n日志: $logPath';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
     }
+  }
+
+  List<File> _listRootJsonFiles(Directory root) {
+    if (!root.existsSync()) {
+      return const <File>[];
+    }
+    return root
+        .listSync(recursive: false, followLinks: false)
+        .whereType<File>()
+        .where((file) => file.path.toLowerCase().endsWith('.json'))
+        .toList(growable: false);
   }
 
   Future<void> _writeConfigToWebdav({
@@ -292,6 +336,180 @@ class SettingsController extends ChangeNotifier {
     throw Exception('上传 config.yaml 失败: ${_formatDioError(lastError ?? 'unknown error')}');
   }
 
+  Future<void> _writeAuthJsonToWebdav({
+    required dynamic client,
+    required Directory localAuthDir,
+    required List<File> localJsonFiles,
+  }) async {
+    await _writeAuthJsonWithCandidates(
+      client: client,
+      localAuthDir: localAuthDir,
+      localJsonFiles: localJsonFiles,
+      remoteRootCandidates: const [
+        CoreDefaults.webdavAuthJsonDirName,
+        '/${CoreDefaults.webdavAuthJsonDirName}',
+      ],
+      logPrefix: 'WebDAV backup auth-json',
+    );
+  }
+
+  Future<void> _writeAuthJsonToWebdavFromParent({
+    required Directory localAuthDir,
+    required List<File> localJsonFiles,
+  }) async {
+    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
+    if (parentUrl == settings.webdavUrl) {
+      throw Exception('父级 WebDAV 地址未变化，无法执行回退写入 auth-json');
+    }
+    await AppServices.log.info('WebDAV backup auth-json fallback to parent url: $parentUrl');
+    final parentClient = newClient(
+      parentUrl,
+      user: settings.webdavUsername,
+      password: settings.webdavPassword,
+      debug: false,
+    );
+    await _writeAuthJsonWithCandidates(
+      client: parentClient,
+      localAuthDir: localAuthDir,
+      localJsonFiles: localJsonFiles,
+      remoteRootCandidates: const [
+        'CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
+        '/CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
+        CoreDefaults.webdavAuthJsonDirName,
+        '/${CoreDefaults.webdavAuthJsonDirName}',
+      ],
+      logPrefix: 'WebDAV backup(parent) auth-json',
+    );
+  }
+
+  Future<void> _writeAuthJsonWithCandidates({
+    required dynamic client,
+    required Directory localAuthDir,
+    required List<File> localJsonFiles,
+    required List<String> remoteRootCandidates,
+    required String logPrefix,
+  }) async {
+    if (!localAuthDir.existsSync()) {
+      await AppServices.log.info(
+        '$logPrefix local root not found, skip upload: ${localAuthDir.path}',
+      );
+      return;
+    }
+    if (localJsonFiles.isEmpty) {
+      await AppServices.log.info('$logPrefix no local json files under ${localAuthDir.path}');
+      return;
+    }
+
+    Object? lastError;
+    for (final remoteRoot in remoteRootCandidates) {
+      try {
+        await AppServices.log.info('$logPrefix try root: $remoteRoot');
+        await client.mkdirAll(remoteRoot);
+        for (final localFile in localJsonFiles) {
+          final fileName = p.basename(localFile.path);
+          final remotePath = '$remoteRoot/$fileName';
+          await client.writeFromFile(localFile.path, remotePath);
+        }
+        await AppServices.log.info('$logPrefix root success: $remoteRoot, files=${localJsonFiles.length}');
+        return;
+      } catch (e) {
+        lastError = e;
+        await AppServices.log.error('$logPrefix root failed: $remoteRoot', _formatDioError(e));
+      }
+    }
+    throw Exception('上传 auth-json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
+  Future<int> _readAuthJsonFromWebdav({
+    required dynamic client,
+    required Directory localAuthDir,
+    required String remoteAuthJsonRoot,
+    required String logPrefix,
+  }) async {
+    await AppServices.log.info('$logPrefix list remote root: $remoteAuthJsonRoot');
+    late final List<dynamic> entries;
+    try {
+      entries = await client.readDir(remoteAuthJsonRoot);
+    } catch (e) {
+      if (_isRemoteNotFound(e)) {
+        await AppServices.log.info('$logPrefix remote root not found, skip restore: $remoteAuthJsonRoot');
+        return 0;
+      }
+      rethrow;
+    }
+    final jsonEntries = entries
+        .where((entry) => entry.isDir != true)
+        .where((entry) => (entry.path ?? '').toLowerCase().endsWith('.json'))
+        .toList(growable: false);
+
+    if (jsonEntries.isEmpty) {
+      await AppServices.log.info('$logPrefix no json files under remote root: $remoteAuthJsonRoot');
+      return 0;
+    }
+
+    if (!localAuthDir.existsSync()) {
+      localAuthDir.createSync(recursive: true);
+    }
+
+    var restoredCount = 0;
+    for (final remoteFile in jsonEntries) {
+      final remotePath = remoteFile.path;
+      if (remotePath == null || remotePath.trim().isEmpty) {
+        continue;
+      }
+      final fileName = p.basename(remotePath);
+      final localPath = p.join(localAuthDir.path, fileName);
+      await client.read2File(remotePath, localPath);
+      restoredCount += 1;
+    }
+
+    await AppServices.log.info('$logPrefix restored json files: $restoredCount');
+    return restoredCount;
+  }
+
+  Future<int> _readAuthJsonFromWebdavFromParent({
+    required Directory localAuthDir,
+  }) async {
+    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
+    if (parentUrl == settings.webdavUrl) {
+      throw Exception('父级 WebDAV 地址未变化，无法执行回退读取 auth-json');
+    }
+    await AppServices.log.info('WebDAV restore auth-json fallback to parent url: $parentUrl');
+    final parentClient = newClient(
+      parentUrl,
+      user: settings.webdavUsername,
+      password: settings.webdavPassword,
+      debug: false,
+    );
+
+    Object? lastError;
+    const candidates = <String>[
+      'CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
+      '/CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
+      CoreDefaults.webdavAuthJsonDirName,
+      '/${CoreDefaults.webdavAuthJsonDirName}',
+    ];
+
+    for (final remoteRoot in candidates) {
+      try {
+        return await _readAuthJsonFromWebdav(
+          client: parentClient,
+          localAuthDir: localAuthDir,
+          remoteAuthJsonRoot: remoteRoot,
+          logPrefix: 'WebDAV restore(parent) auth-json',
+        );
+      } catch (e) {
+        lastError = e;
+        await AppServices.log.error(
+          'WebDAV restore(parent) auth-json failed root: $remoteRoot',
+          _formatDioError(e),
+        );
+      }
+    }
+
+    throw Exception('下载 auth-json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
   Future<void> _readConfigFromWebdav({
     required dynamic client,
     required String localConfigPath,
@@ -348,6 +566,24 @@ class SettingsController extends ChangeNotifier {
       }
     }
     throw Exception('下载 config.yaml 失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
+  Future<void> _restartCoreAfterRestore() async {
+    await AppServices.log.info('WebDAV restore restarting core begin');
+    await AppServices.process.stop();
+    await AppServices.process.start();
+    await AppServices.log.info('WebDAV restore restarting core completed');
+  }
+
+  bool _isRemoteNotFound(Object error) {
+    if (error is DioException) {
+      final status = error.response?.statusCode;
+      if (status == 404) {
+        return true;
+      }
+    }
+    final text = error.toString();
+    return text.contains('status=404') || text.contains('404 Not Found');
   }
 
   bool _shouldTryParentFallback(Object error) {
