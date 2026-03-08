@@ -247,13 +247,31 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Color _webdavStatusColor(BuildContext context) {
+  Color _coreStatusAccentColor(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return _controller.isCoreRunning ? scheme.primary : scheme.error;
+  }
+
+  String _coreStatusLabel() {
+    return _controller.isCoreRunning ? '运行中' : '未运行';
+  }
+
+  Color _webdavStatusAccentColor(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return switch (_controller.webdavStatusLevel) {
-      WebdavStatusLevel.success => scheme.primaryContainer,
-      WebdavStatusLevel.failure => scheme.errorContainer,
-      WebdavStatusLevel.running => scheme.secondaryContainer,
-      WebdavStatusLevel.idle => scheme.surfaceContainerHighest,
+      WebdavStatusLevel.success => scheme.primary,
+      WebdavStatusLevel.failure => scheme.error,
+      WebdavStatusLevel.running => scheme.secondary,
+      WebdavStatusLevel.idle => scheme.outline,
+    };
+  }
+
+  String _webdavStatusLabel() {
+    return switch (_controller.webdavStatusLevel) {
+      WebdavStatusLevel.success => '成功',
+      WebdavStatusLevel.failure => '失败',
+      WebdavStatusLevel.running => '进行中',
+      WebdavStatusLevel.idle => '未测试',
     };
   }
 
@@ -322,43 +340,33 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: _controller.isCoreRunning
-                  ? scheme.primaryContainer.withValues(alpha: 0.45)
-                  : scheme.errorContainer.withValues(alpha: 0.6),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: _controller.isCoreRunning
-                    ? scheme.primary.withValues(alpha: 0.2)
-                    : scheme.error.withValues(alpha: 0.2),
-              ),
+              color: scheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                Text(
-                  '核心状态',
-                  style: textTheme.labelMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w600,
-                  ),
+                Icon(
+                  _controller.isCoreRunning ? Icons.check_circle : Icons.error_outline,
+                  color: _coreStatusAccentColor(context),
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Icon(
-                      _controller.isCoreRunning ? Icons.check_circle : Icons.error,
-                      color: _controller.isCoreRunning ? scheme.primary : scheme.error,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${_controller.isCoreRunning ? '核心运行中' : '核心未运行'}  ·  端口 ${_controller.currentPort}',
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '核心状态：${_coreStatusLabel()}',
                         style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
                       ),
-                    ),
-                  ],
+                      Text(
+                        '端口 ${_controller.currentPort}',
+                        style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -541,34 +549,30 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: _webdavStatusColor(context),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.4)),
+              color: scheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                Text(
-                  '同步状态',
-                  style: textTheme.labelMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Icon(_webdavStatusIcon(), color: scheme.onSurface),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _controller.webdavStatusText,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
+                Icon(_webdavStatusIcon(), color: _webdavStatusAccentColor(context)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '同步状态：${_webdavStatusLabel()}',
+                        style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
                       ),
-                    ),
-                  ],
+                      Text(
+                        _controller.webdavStatusText,
+                        style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
