@@ -247,47 +247,21 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Color _coreStatusAccentColor(BuildContext context) {
+  Color _coreStatusDotColor(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return _controller.isCoreRunning ? scheme.primary : scheme.error;
+    return _controller.isCoreRunning ? Colors.green : scheme.error;
   }
 
-  String _coreStatusLabel() {
-    return _controller.isCoreRunning ? '运行中' : '未运行';
-  }
-
-  Color _webdavStatusAccentColor(BuildContext context) {
+  Color _webdavStatusDotColor(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return switch (_controller.webdavStatusLevel) {
-      WebdavStatusLevel.success => scheme.primary,
-      WebdavStatusLevel.failure => scheme.error,
-      WebdavStatusLevel.running => scheme.secondary,
-      WebdavStatusLevel.idle => scheme.outline,
-    };
-  }
-
-  String _webdavStatusLabel() {
-    return switch (_controller.webdavStatusLevel) {
-      WebdavStatusLevel.success => '成功',
-      WebdavStatusLevel.failure => '失败',
-      WebdavStatusLevel.running => '进行中',
-      WebdavStatusLevel.idle => '未测试',
-    };
-  }
-
-  IconData _webdavStatusIcon() {
-    return switch (_controller.webdavStatusLevel) {
-      WebdavStatusLevel.success => Icons.check_circle,
-      WebdavStatusLevel.failure => Icons.error,
-      WebdavStatusLevel.running => Icons.sync,
-      WebdavStatusLevel.idle => Icons.info,
-    };
+    return _controller.webdavStatusLevel == WebdavStatusLevel.success ? Colors.green : scheme.error;
   }
 
   Widget _sectionCard({
     required IconData icon,
     required String title,
     required Widget child,
+    Color? statusDotColor,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -319,6 +293,13 @@ class _SettingsPageState extends State<SettingsPage> {
                   title,
                   style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
                 ),
+                const Spacer(),
+                if (statusDotColor != null)
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(color: statusDotColor, shape: BoxShape.circle),
+                  ),
               ],
             ),
             const SizedBox(height: _itemGap),
@@ -335,43 +316,10 @@ class _SettingsPageState extends State<SettingsPage> {
     return _sectionCard(
       icon: Icons.layers,
       title: '核心运行',
+      statusDotColor: _coreStatusDotColor(context),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  _controller.isCoreRunning ? Icons.check_circle : Icons.error_outline,
-                  color: _coreStatusAccentColor(context),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '核心状态：${_coreStatusLabel()}',
-                        style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      Text(
-                        '端口 ${_controller.currentPort}',
-                        style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: _itemGap),
           DropdownButtonFormField<String>(
             value: selectedVersion,
             decoration: _inputDecoration(label: '核心版本'),
@@ -544,40 +492,10 @@ class _SettingsPageState extends State<SettingsPage> {
     return _sectionCard(
       icon: Icons.cloud_sync,
       title: 'WebDAV 同步',
+      statusDotColor: _webdavStatusDotColor(context),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
-            ),
-            child: Row(
-              children: [
-                Icon(_webdavStatusIcon(), color: _webdavStatusAccentColor(context)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '同步状态：${_webdavStatusLabel()}',
-                        style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      Text(
-                        _controller.webdavStatusText,
-                        style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: _itemGap),
           TextField(
             controller: _webdavUrlCtl,
             focusNode: _webdavUrlFocus,
