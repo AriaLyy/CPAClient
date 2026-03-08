@@ -46,9 +46,18 @@ jobs:
             target: windows
             arch: amd64
             flutter_arch: x64
+            windows_target_platform: windows-x64
             artifact: windows_amd64.zip
             format: zip
             build_dir: build/windows/x64/runner/Release
+          - runner: windows-11-arm
+            target: windows
+            arch: arm64
+            flutter_arch: arm64
+            windows_target_platform: windows-arm64
+            artifact: windows_arm64.zip
+            format: zip
+            build_dir: build/windows/arm64/runner/Release
 
     runs-on: ${{ matrix.runner }}
 
@@ -106,7 +115,7 @@ jobs:
 
       - name: Build Windows
         if: matrix.target == 'windows'
-        run: flutter build windows --release
+        run: flutter build windows --release --target-platform ${{ matrix.windows_target_platform }}
 
       - name: Verify build output (linux/macos)
         if: matrix.format == 'tar.gz'

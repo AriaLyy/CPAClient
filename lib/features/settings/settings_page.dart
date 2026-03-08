@@ -35,9 +35,9 @@ class _SettingsPageState extends State<SettingsPage> {
   final FocusNode _webdavUserFocus = FocusNode();
   final FocusNode _webdavPwdFocus = FocusNode();
 
-  static const double _pagePadding = 16;
-  static const double _sectionGap = 12;
-  static const double _itemGap = 12;
+  static const double _pagePadding = 18;
+  static const double _sectionGap = 14;
+  static const double _itemGap = 14;
 
   @override
   void initState() {
@@ -233,7 +233,16 @@ class _SettingsPageState extends State<SettingsPage> {
     return InputDecoration(
       labelText: label,
       hintText: hint,
-      border: const OutlineInputBorder(),
+      border: const OutlineInputBorder(
+        borderRadius: BorderRadius.all(Radius.circular(10)),
+      ),
+      enabledBorder: const OutlineInputBorder(
+        borderRadius: BorderRadius.all(Radius.circular(10)),
+      ),
+      focusedBorder: const OutlineInputBorder(
+        borderRadius: BorderRadius.all(Radius.circular(10)),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
       isDense: true,
     );
   }
@@ -263,9 +272,14 @@ class _SettingsPageState extends State<SettingsPage> {
     required Widget child,
   }) {
     final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
     return Card(
       elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: scheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -274,16 +288,19 @@ class _SettingsPageState extends State<SettingsPage> {
             Row(
               children: [
                 Container(
-                  width: 28,
-                  height: 28,
+                  width: 30,
+                  height: 30,
                   decoration: BoxDecoration(
                     color: scheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(9),
                   ),
                   child: Icon(icon, size: 16, color: scheme.onPrimaryContainer),
                 ),
-                const SizedBox(width: 8),
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                const SizedBox(width: 10),
+                Text(
+                  title,
+                  style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                ),
               ],
             ),
             const SizedBox(height: _itemGap),
@@ -296,6 +313,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildCoreSection({required List<String> versions, required String selectedVersion}) {
     final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
     return _sectionCard(
       icon: Icons.layers,
       title: '核心运行',
@@ -303,23 +321,44 @@ class _SettingsPageState extends State<SettingsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(10),
+              color: _controller.isCoreRunning
+                  ? scheme.primaryContainer.withValues(alpha: 0.45)
+                  : scheme.errorContainer.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: _controller.isCoreRunning
+                    ? scheme.primary.withValues(alpha: 0.2)
+                    : scheme.error.withValues(alpha: 0.2),
+              ),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  _controller.isCoreRunning ? Icons.check_circle : Icons.error,
-                  color: _controller.isCoreRunning ? scheme.primary : scheme.error,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '${_controller.isCoreRunning ? '核心运行中' : '核心未运行'}  ·  端口 ${_controller.currentPort}',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                Text(
+                  '核心状态',
+                  style: textTheme.labelMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
                   ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      _controller.isCoreRunning ? Icons.check_circle : Icons.error,
+                      color: _controller.isCoreRunning ? scheme.primary : scheme.error,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${_controller.isCoreRunning ? '核心运行中' : '核心未运行'}  ·  端口 ${_controller.currentPort}',
+                        style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -339,6 +378,14 @@ class _SettingsPageState extends State<SettingsPage> {
             },
           ),
           const SizedBox(height: _itemGap),
+          Text(
+            '运行操作',
+            style: textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -366,21 +413,32 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
           const SizedBox(height: _itemGap),
+          Text(
+            '核心配置快捷入口',
+            style: textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              FilledButton.tonal(
+              FilledButton.tonalIcon(
                 onPressed: () => _run(_controller.openConfigFile),
-                child: const Text('打开 config.yaml'),
+                icon: const Icon(Icons.description_outlined),
+                label: const Text('打开 config.yaml'),
               ),
-              FilledButton.tonal(
+              FilledButton.tonalIcon(
                 onPressed: () => _run(_controller.openConfigDirectory),
-                child: const Text('打开配置目录'),
+                icon: const Icon(Icons.folder_open),
+                label: const Text('打开配置目录'),
               ),
-              FilledButton.tonal(
+              FilledButton.tonalIcon(
                 onPressed: () => _run(_controller.openSandboxDirectory),
-                child: const Text('打开 sandbox 目录'),
+                icon: const Icon(Icons.source_outlined),
+                label: const Text('打开 sandbox 目录'),
               ),
             ],
           ),
@@ -474,6 +532,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildWebdavSection() {
     final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
     return _sectionCard(
       icon: Icons.cloud_sync,
       title: 'WebDAV 同步',
@@ -482,20 +541,34 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: _webdavStatusColor(context),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.4)),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(_webdavStatusIcon(), color: scheme.onSurface),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _controller.webdavStatusText,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                Text(
+                  '同步状态',
+                  style: textTheme.labelMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
                   ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(_webdavStatusIcon(), color: scheme.onSurface),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _controller.webdavStatusText,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -520,11 +593,19 @@ class _SettingsPageState extends State<SettingsPage> {
             decoration: _inputDecoration(label: '密码'),
           ),
           const SizedBox(height: _itemGap),
+          Text(
+            '连接与同步操作',
+            style: textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              FilledButton(
+              FilledButton.icon(
                 onPressed: () => _run(() async {
                   final msg = await _controller.saveWebdavForm(
                     url: _webdavUrlCtl.text,
@@ -535,35 +616,39 @@ class _SettingsPageState extends State<SettingsPage> {
                   _reloadWebdavDraftFromSettings();
                   return msg;
                 }),
-                child: const Text('保存'),
+                icon: const Icon(Icons.save_outlined),
+                label: const Text('保存设置'),
               ),
-              FilledButton.tonal(
+              FilledButton.tonalIcon(
                 onPressed: () => _run(() => _controller.testWebdavConnection(
                       url: _webdavUrlCtl.text,
                       username: _webdavUserCtl.text,
                       password: _webdavPwdCtl.text,
                     )),
-                child: const Text('测试连接'),
+                icon: const Icon(Icons.wifi_tethering),
+                label: const Text('测试连接'),
               ),
-              FilledButton.tonal(
+              FilledButton.tonalIcon(
                 onPressed: _backingUpWebdav ? null : _runBackupWebdav,
-                child: _backingUpWebdav
+                icon: _backingUpWebdav
                     ? const SizedBox(
                         width: 16,
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('备份'),
+                    : const Icon(Icons.upload_file),
+                label: const Text('备份配置'),
               ),
-              FilledButton.tonal(
+              FilledButton.tonalIcon(
                 onPressed: _restoringWebdav ? null : _runRestoreWebdav,
-                child: _restoringWebdav
+                icon: _restoringWebdav
                     ? const SizedBox(
                         width: 16,
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('还原'),
+                    : const Icon(Icons.settings_backup_restore),
+                label: const Text('还原配置'),
               ),
             ],
           ),
@@ -607,6 +692,16 @@ class _SettingsPageState extends State<SettingsPage> {
           ];
 
           if (isNarrow) {
+            return ListView.separated(
+              padding: const EdgeInsets.all(_pagePadding),
+              itemBuilder: (_, index) => sections[index],
+              separatorBuilder: (_, __) => const SizedBox(height: _sectionGap),
+              itemCount: sections.length,
+            );
+          }
+
+          final isWide = constraints.maxWidth >= 1180;
+          if (!isWide) {
             return ListView.separated(
               padding: const EdgeInsets.all(_pagePadding),
               itemBuilder: (_, index) => sections[index],
