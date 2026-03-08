@@ -11,6 +11,8 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webdav_client/webdav_client.dart';
 
+enum WebdavStatusLevel { idle, running, success, failure }
+
 class SettingsController extends ChangeNotifier {
   SettingsController();
 
@@ -20,6 +22,8 @@ class SettingsController extends ChangeNotifier {
   int currentPort = 8317;
   String webuiPassword = '';
   List<String> recentVersions = const [];
+  WebdavStatusLevel webdavStatusLevel = WebdavStatusLevel.idle;
+  String webdavStatusText = '尚未测试 WebDAV 连接';
 
   ThemeMode get themeMode {
     switch (settings.themeMode) {
@@ -122,12 +126,17 @@ class SettingsController extends ChangeNotifier {
   }) async {
     final inputUrl = url.trim();
     if (inputUrl.isEmpty) {
-      return '请先填写 WebDAV 地址';
+      final msg = '请先填写 WebDAV 地址';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
     }
     if (inputUrl.endsWith('/')) {
-      return 'WebDAV 地址不能以 / 结尾';
+      final msg = 'WebDAV 地址不能以 / 结尾';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
     }
     final normalizedUrl = inputUrl.endsWith('/CpaClient') ? inputUrl : '$inputUrl/CpaClient';
+    _setWebdavStatus(WebdavStatusLevel.running, '正在测试连接...');
     try {
       await AppServices.log.info('WebDAV test start: url=$normalizedUrl user=${username.trim()}');
       final client = newClient(
@@ -138,17 +147,24 @@ class SettingsController extends ChangeNotifier {
       );
       await client.ping();
       await AppServices.log.info('WebDAV test success: url=$normalizedUrl');
-      return 'WebDAV 连接成功';
+      const msg = 'WebDAV 连接成功';
+      _setWebdavStatus(WebdavStatusLevel.success, msg);
+      return msg;
     } catch (e) {
       await AppServices.log.error('WebDAV test failed: url=$normalizedUrl', _formatDioError(e));
-      return 'WebDAV 连接失败: $e';
+      final msg = 'WebDAV 连接失败: $e';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
     }
   }
 
   Future<String> backupConfigToWebdav() async {
     if (settings.webdavUrl.trim().isEmpty) {
-      return '请先填写 WebDAV 地址';
+      const msg = '请先填写 WebDAV 地址';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
     }
+    _setWebdavStatus(WebdavStatusLevel.running, '正在备份配置...');
     try {
       final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
       await AppServices.log.info('WebDAV backup start: url=${settings.webdavUrl} local=${cfg.path}');
@@ -168,17 +184,24 @@ class SettingsController extends ChangeNotifier {
         }
       }
       await AppServices.log.info('WebDAV backup success');
-      return '已备份到 config.yaml';
+      const msg = '已备份到 config.yaml';
+      _setWebdavStatus(WebdavStatusLevel.success, msg);
+      return msg;
     } catch (e) {
       await AppServices.log.error('WebDAV backup failed', _formatDioError(e));
-      return 'WebDAV 备份失败: $e';
+      final msg = 'WebDAV 备份失败: $e';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
     }
   }
 
   Future<String> restoreConfigFromWebdav() async {
     if (settings.webdavUrl.trim().isEmpty) {
-      return '请先填写 WebDAV 地址';
+      const msg = '请先填写 WebDAV 地址';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
     }
+    _setWebdavStatus(WebdavStatusLevel.running, '正在还原配置...');
     try {
       final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
       await AppServices.log.info('WebDAV restore start: url=${settings.webdavUrl} local=${cfg.path}');
@@ -200,10 +223,14 @@ class SettingsController extends ChangeNotifier {
       currentPort = await AppServices.sandboxConfig.readPort();
       notifyListeners();
       await AppServices.log.info('WebDAV restore success');
-      return '已从 config.yaml 还原';
+      const msg = '已从 config.yaml 还原';
+      _setWebdavStatus(WebdavStatusLevel.success, msg);
+      return msg;
     } catch (e) {
       await AppServices.log.error('WebDAV restore failed', _formatDioError(e));
-      return 'WebDAV 还原失败: $e';
+      final msg = 'WebDAV 还原失败: $e';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
     }
   }
 
@@ -370,6 +397,47 @@ class SettingsController extends ChangeNotifier {
     }
   }
 
+  Future<String> openWebUi() async {
+    try {
+      final uri = Uri.parse('http://127.0.0.1:$currentPort/management.html#/login');
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      return '已打开 WebUI';
+    } catch (e) {
+      return '打开 WebUI 失败: $e';
+    }
+  }
+
+  Future<String> openConfigFile() async {
+    try {
+      final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
+      await launchUrl(cfg.uri, mode: LaunchMode.externalApplication);
+      return '已打开 config.yaml';
+    } catch (e) {
+      return '打开 config.yaml 失败: $e';
+    }
+  }
+
+  Future<String> openConfigDirectory() async {
+    try {
+      final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
+      final dir = cfg.parent;
+      await launchUrl(dir.uri, mode: LaunchMode.externalApplication);
+      return '已打开配置目录';
+    } catch (e) {
+      return '打开配置目录失败: $e';
+    }
+  }
+
+  Future<String> openSandboxDirectory() async {
+    try {
+      final dir = await AppServices.paths.sandboxRoot();
+      await launchUrl(dir.uri, mode: LaunchMode.externalApplication);
+      return '已打开 sandbox 目录';
+    } catch (e) {
+      return '打开 sandbox 目录失败: $e';
+    }
+  }
+
   Future<String> updateCore() async {
     try {
       await AppServices.startup.updateCore(
@@ -468,6 +536,12 @@ class SettingsController extends ChangeNotifier {
 
   void _setStatus(String value) {
     lastStatus = value;
+    notifyListeners();
+  }
+
+  void _setWebdavStatus(WebdavStatusLevel level, String text) {
+    webdavStatusLevel = level;
+    webdavStatusText = text;
     notifyListeners();
   }
 
