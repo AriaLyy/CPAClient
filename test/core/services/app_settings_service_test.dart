@@ -4,9 +4,7 @@ import 'dart:io';
 import 'package:cpaclient/core/models/app_settings.dart';
 import 'package:cpaclient/core/services/app_settings_service.dart';
 import 'package:cpaclient/core/services/sandbox_path_service.dart';
-import 'package:cpaclient/core/services/secure_key_store_service.dart';
 import 'package:cpaclient/core/services/settings_crypto_service.dart';
-import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _FakeSandboxPathService extends SandboxPathService {
@@ -16,16 +14,6 @@ class _FakeSandboxPathService extends SandboxPathService {
 
   @override
   Future<File> settingsFile() async => _file;
-}
-
-class _MemoryKeyStore implements SettingsKeyStore {
-  final Map<String, SecretKey> _keys = <String, SecretKey>{};
-
-  @override
-  Future<SecretKey> readOrCreateKey(String keyId) async {
-    return _keys.putIfAbsent(
-        keyId, () => SecretKey(List<int>.generate(32, (index) => index + 1)));
-  }
 }
 
 void main() {
@@ -40,7 +28,6 @@ void main() {
       settingsFile = File('${tempDir.path}/app_settings.json');
       service = AppSettingsService(
         _FakeSandboxPathService(settingsFile),
-        keyStore: _MemoryKeyStore(),
         crypto: SettingsCryptoService(),
       );
     });
@@ -70,7 +57,7 @@ void main() {
       expect(raw.contains('pwd-123'), isFalse);
 
       final map = jsonDecode(raw) as Map<String, dynamic>;
-      expect(map['schemaVersion'], 2);
+      expect(map['schemaVersion'], 3);
       expect(map['coreVersion'], '6.8.47');
       expect(map['themeMode'], 'dark');
       expect(map['secrets'], isA<Map<String, dynamic>>());
@@ -95,7 +82,7 @@ void main() {
 
       final migratedRaw = await settingsFile.readAsString();
       final migrated = jsonDecode(migratedRaw) as Map<String, dynamic>;
-      expect(migrated['schemaVersion'], 2);
+      expect(migrated['schemaVersion'], 3);
       expect(migrated.containsKey('githubToken'), isFalse);
       expect(migrated.containsKey('webdavUrl'), isFalse);
       expect(migrated.containsKey('webdavUsername'), isFalse);

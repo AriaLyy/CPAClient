@@ -385,10 +385,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   TextStyle? _promptTextStyle(BuildContext context) {
-    final theme = Theme.of(context);
-    return theme.textTheme.bodySmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.78),
-    );
+    return Theme.of(context).textTheme.bodySmall;
   }
 
   TextStyle? _versionUpdatePromptTextStyle(BuildContext context) {
@@ -408,47 +405,28 @@ class _SettingsPageState extends State<SettingsPage> {
     TextStyle? hintStyle,
     TextStyle? helperStyle,
   }) {
-    final scheme = Theme.of(context).colorScheme;
-    final promptStyle = _promptTextStyle(context);
     return InputDecoration(
       labelText: label,
       hintText: hint,
-      hintStyle: hintStyle ?? promptStyle,
+      hintStyle: hintStyle,
       helperText: helper,
-      helperStyle: helperStyle ?? promptStyle,
+      helperStyle: helperStyle,
       errorText: error,
       suffixIcon: suffixIcon,
-      filled: true,
-      fillColor: scheme.surfaceContainerLowest,
-      border: const OutlineInputBorder(
-        borderRadius: BorderRadius.all(Radius.circular(10)),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: const BorderRadius.all(Radius.circular(10)),
-        borderSide:
-            BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: const BorderRadius.all(Radius.circular(10)),
-        borderSide: BorderSide(color: scheme.primary, width: 1.4),
-      ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      isDense: true,
     );
   }
 
   Color _coreStatusDotColor(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return _controller.isCoreRunning ? Colors.green : scheme.error;
+    return _controller.isCoreRunning ? Colors.green : Colors.red;
   }
 
   Color _webdavStatusDotColor(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return switch (_controller.webdavStatusLevel) {
       WebdavStatusLevel.success => Colors.green,
-      WebdavStatusLevel.failure => scheme.error,
+      WebdavStatusLevel.failure => Colors.red,
       WebdavStatusLevel.running => scheme.primary,
-      WebdavStatusLevel.idle => scheme.onSurfaceVariant,
+      WebdavStatusLevel.idle => scheme.onSurface,
     };
   }
 
@@ -490,9 +468,8 @@ class _SettingsPageState extends State<SettingsPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.45)),
+        border: Border.all(color: color),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -506,11 +483,7 @@ class _SettingsPageState extends State<SettingsPage> {
               decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
           const SizedBox(width: 6),
-          Text(
-            label,
-            style: textTheme.labelSmall
-                ?.copyWith(fontWeight: FontWeight.w700, color: color),
-          ),
+          Text(label, style: textTheme.labelSmall?.copyWith(color: color)),
         ],
       ),
     );
@@ -527,83 +500,32 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         const SizedBox(width: 8),
-        Text(
-          value,
-          style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-        ),
+        Text(value, style: textTheme.bodyMedium),
       ],
     );
   }
 
   ButtonStyle _filledControlStyle() {
-    final scheme = Theme.of(context).colorScheme;
     return FilledButton.styleFrom(
       minimumSize: const Size(0, _controlMinHeight),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      disabledBackgroundColor:
-          scheme.surfaceContainerHighest.withValues(alpha: 0.75),
-      disabledForegroundColor: scheme.onSurface.withValues(alpha: 0.45),
-    ).copyWith(
-      overlayColor: WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.pressed)) {
-          return scheme.onPrimary.withValues(alpha: 0.18);
-        }
-        if (states.contains(WidgetState.hovered)) {
-          return scheme.onPrimary.withValues(alpha: 0.1);
-        }
-        if (states.contains(WidgetState.focused)) {
-          return scheme.onPrimary.withValues(alpha: 0.14);
-        }
-        return null;
-      }),
     );
   }
 
   ButtonStyle _tonalControlStyle() {
-    final scheme = Theme.of(context).colorScheme;
     return FilledButton.styleFrom(
       minimumSize: const Size(0, _controlMinHeight),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      disabledBackgroundColor:
-          scheme.surfaceContainerHighest.withValues(alpha: 0.6),
-      disabledForegroundColor: scheme.onSurface.withValues(alpha: 0.45),
-    ).copyWith(
-      overlayColor: WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.pressed)) {
-          return scheme.primary.withValues(alpha: 0.18);
-        }
-        if (states.contains(WidgetState.hovered)) {
-          return scheme.primary.withValues(alpha: 0.1);
-        }
-        if (states.contains(WidgetState.focused)) {
-          return scheme.primary.withValues(alpha: 0.14);
-        }
-        return null;
-      }),
     );
   }
 
   ButtonStyle _textControlStyle() {
-    final scheme = Theme.of(context).colorScheme;
     return TextButton.styleFrom(
       minimumSize: const Size(0, _controlMinHeight),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-    ).copyWith(
-      overlayColor: WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.pressed)) {
-          return scheme.primary.withValues(alpha: 0.14);
-        }
-        if (states.contains(WidgetState.hovered)) {
-          return scheme.primary.withValues(alpha: 0.08);
-        }
-        if (states.contains(WidgetState.focused)) {
-          return scheme.primary.withValues(alpha: 0.1);
-        }
-        return null;
-      }),
     );
   }
 
@@ -618,13 +540,6 @@ class _SettingsPageState extends State<SettingsPage> {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     return Card(
-      margin: EdgeInsets.zero,
-      elevation: 0,
-      color: scheme.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
-      ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
         child: Column(
@@ -636,7 +551,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   width: 30,
                   height: 30,
                   decoration: BoxDecoration(
-                    color: scheme.primaryContainer.withValues(alpha: 0.72),
+                    color: scheme.primaryContainer,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Icon(icon, size: 15, color: scheme.onPrimaryContainer),
@@ -646,12 +561,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        title,
-                        style: textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
+                      Text(title, style: textTheme.titleSmall),
                       const SizedBox(height: 3),
                       Text(
                         subtitle,
@@ -693,22 +603,18 @@ class _SettingsPageState extends State<SettingsPage> {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
+        color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        border: Border.all(color: scheme.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, size: _uiIconSize, color: scheme.onSurfaceVariant),
+              Icon(icon, size: _uiIconSize, color: scheme.onSurface),
               const SizedBox(width: 6),
-              Text(
-                title,
-                style:
-                    textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-              ),
+              Text(title, style: textTheme.titleSmall),
             ],
           ),
           const SizedBox(height: 6),
@@ -731,28 +637,18 @@ class _SettingsPageState extends State<SettingsPage> {
       decoration: BoxDecoration(
         color: scheme.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+        border: Border.all(color: scheme.outlineVariant),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 13, 14, 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              '核心概览',
-              style: textTheme.labelMedium?.copyWith(
-                color: scheme.onSurfaceVariant,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            Text('核心概览', style: textTheme.labelMedium),
             const SizedBox(height: 10),
             Row(
               children: [
-                Text(
-                  '核心版本',
-                  style: textTheme.bodySmall
-                      ?.copyWith(color: scheme.onSurfaceVariant),
-                ),
+                Text('核心版本', style: textTheme.bodySmall),
                 const SizedBox(width: 6),
                 Container(
                   width: 8,
@@ -763,12 +659,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 const Spacer(),
-                Text(
-                  _controller.settings.coreVersion,
-                  style: textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                Text(_controller.settings.coreVersion,
+                    style: textTheme.bodyMedium),
               ],
             ),
             const SizedBox(height: 8),
@@ -950,7 +842,7 @@ class _SettingsPageState extends State<SettingsPage> {
       color: scheme.surfaceContainerLow,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.34)),
+        side: BorderSide(color: scheme.outlineVariant),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
@@ -959,13 +851,7 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
-              child: Text(
-                '设置导航',
-                style: textTheme.labelMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+              child: Text('设置导航', style: textTheme.labelMedium),
             ),
             for (final section in sections) ...[
               Builder(
@@ -974,15 +860,13 @@ class _SettingsPageState extends State<SettingsPage> {
                   final hovered = _hoveredSection == section;
                   final focused = _focusedSection == section;
                   final bgColor = selected
-                      ? scheme.secondaryContainer
+                      ? scheme.primaryContainer
                       : hovered
-                          ? scheme.onSurface.withValues(alpha: 0.06)
-                          : Colors.transparent;
-                  final borderColor = focused
-                      ? scheme.outline.withValues(alpha: 0.5)
-                      : Colors.transparent;
+                          ? scheme.surfaceContainerHighest
+                          : null;
+                  final borderColor = focused ? scheme.outline : null;
                   final titleColor =
-                      selected ? scheme.onSecondaryContainer : scheme.onSurface;
+                      selected ? scheme.onPrimaryContainer : scheme.onSurface;
 
                   return Focus(
                     onFocusChange: (hasFocus) {
@@ -1023,7 +907,9 @@ class _SettingsPageState extends State<SettingsPage> {
                         decoration: BoxDecoration(
                           color: bgColor,
                           borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: borderColor),
+                          border: borderColor == null
+                              ? null
+                              : Border.all(color: borderColor),
                         ),
                         child: Row(
                           children: [
@@ -1037,7 +923,6 @@ class _SettingsPageState extends State<SettingsPage> {
                               child: Text(
                                 _sectionTitle(section),
                                 style: textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
                                   color: titleColor,
                                 ),
                               ),
@@ -1070,7 +955,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildCoreSection(
       {required List<String> versions, required String selectedVersion}) {
-    final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     final statusMessage = _controller.lastStatus.trim();
     final latestVersion = versions.first;
@@ -1084,19 +968,9 @@ class _SettingsPageState extends State<SettingsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (statusMessage.isNotEmpty) ...[
-            Text(
-              '状态消息',
-              style: textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
+            Text('状态消息', style: textTheme.labelSmall),
             const SizedBox(height: 4),
-            Text(
-              statusMessage,
-              style:
-                  textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-            ),
+            Text(statusMessage, style: textTheme.bodySmall),
             const SizedBox(height: _itemGap),
           ],
           DropdownButtonFormField<String>(
@@ -1121,13 +995,7 @@ class _SettingsPageState extends State<SettingsPage> {
             },
           ),
           const SizedBox(height: _itemGap),
-          Text(
-            '运行操作',
-            style: textTheme.labelMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
+          Text('运行操作', style: textTheme.labelMedium),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
@@ -1155,7 +1023,10 @@ class _SettingsPageState extends State<SettingsPage> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : Icon(Icons.restart_alt, size: _uiIconSize),
-                label: const Text('重启核心'),
+                label: Text(
+                  '重启核心',
+                  style: textTheme.labelMedium,
+                ),
               ),
               FilledButton.tonalIcon(
                 style: _tonalControlStyle(),
@@ -1167,18 +1038,15 @@ class _SettingsPageState extends State<SettingsPage> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : Icon(Icons.stop_circle_outlined, size: _uiIconSize),
-                label: const Text('停止核心'),
+                label: Text(
+                  '停止核心',
+                  style: textTheme.labelMedium,
+                ),
               ),
             ],
           ),
           const SizedBox(height: _itemGap),
-          Text(
-            '配置快捷入口',
-            style: textTheme.labelMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
+          Text('配置快捷入口', style: textTheme.labelMedium),
           const SizedBox(height: 8),
           Row(
             children: [
@@ -1188,13 +1056,13 @@ class _SettingsPageState extends State<SettingsPage> {
                     minimumSize: const Size(0, _controlMinHeight),
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 10),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
                   ),
                   onPressed: () => _run(_controller.openConfigFile),
                   icon: Icon(Icons.description_outlined, size: _uiIconSize),
-                  label: const Text('打开 config.yaml'),
+                  label: Text(
+                    '打开 config.yaml',
+                    style: textTheme.labelMedium,
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -1204,13 +1072,10 @@ class _SettingsPageState extends State<SettingsPage> {
                     minimumSize: const Size(0, _controlMinHeight),
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 10),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
                   ),
                   onPressed: () => _run(_controller.openConfigDirectory),
                   icon: Icon(Icons.folder_open, size: _uiIconSize),
-                  label: const Text('打开配置目录'),
+                  label: Text('打开配置目录', style: textTheme.labelMedium),
                 ),
               ),
             ],
@@ -1221,8 +1086,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildSecuritySection() {
-    final scheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
     return _sectionCard(
       icon: Icons.security_rounded,
       title: '安全访问',
@@ -1423,7 +1286,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildWebdavSection() {
-    final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     final intervalMinutes =
         _controller.settings.webdavAutoBackupIntervalMinutes;
@@ -1488,7 +1350,10 @@ class _SettingsPageState extends State<SettingsPage> {
             dense: true,
             contentPadding: EdgeInsets.zero,
             value: _controller.settings.webdavAutoBackupEnabled,
-            title: Text('自动备份（$intervalLabel）'),
+            title: Text(
+              '自动备份（$intervalLabel）',
+              style: textTheme.labelMedium,
+            ),
             onChanged: (value) =>
                 _run(() => _controller.saveWebdavAutoBackupEnabled(value)),
           ),
@@ -1500,8 +1365,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ? intervalMinutes
                   : 60,
               decoration: _inputDecoration(
-                label: '自动备份间隔',
-              ),
+                  label: '自动备份间隔', hintStyle: textTheme.labelMedium),
               items: const [
                 DropdownMenuItem(value: 5, child: Text('5 分钟')),
                 DropdownMenuItem(value: 30, child: Text('30 分钟')),
@@ -1524,13 +1388,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ],
           const SizedBox(height: _itemGap),
-          Text(
-            '连接与同步操作',
-            style: textTheme.labelMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
+          Text('连接与同步操作', style: textTheme.labelMedium),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
@@ -1605,34 +1463,21 @@ class _SettingsPageState extends State<SettingsPage> {
             width: double.infinity,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
+              color: scheme.surfaceContainerHighest,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                  color: scheme.outlineVariant.withValues(alpha: 0.5)),
+              border: Border.all(color: scheme.outlineVariant),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '版本信息',
-                  style: textTheme.labelMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
+                Text('版本信息', style: textTheme.labelMedium),
                 const SizedBox(height: 6),
                 _metricRow(label: '应用版本', value: '未知'),
                 const SizedBox(height: 6),
                 _metricRow(
                     label: '核心版本', value: _controller.settings.coreVersion),
                 const SizedBox(height: 10),
-                Text(
-                  '项目仓库',
-                  style: textTheme.labelMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
+                Text('项目仓库', style: textTheme.labelMedium),
                 const SizedBox(height: 4),
                 GestureDetector(
                   onTap: () => _run(_controller.openAbout),

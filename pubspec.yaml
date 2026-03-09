@@ -59,6 +59,10 @@ flutter:
   assets:
     - configs/config.yaml
     - macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png
+  fonts:
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-Variable.ttf
 
 flutter_launcher_icons:
   android: false
