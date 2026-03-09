@@ -143,7 +143,7 @@ Tag 发布流程定义在 `.github/workflows/release.yml`：
 
 - 触发条件：push 标签匹配 `v*`
 - 矩阵构建 Linux/macOS/Windows 的 amd64/arm64 产物
-- 打包格式：Linux/macOS 为 `.tar.gz`，Windows 为 `.zip`
+- 打包格式：Linux/macOS 为 `.tar.gz`，Windows 直接输出 `.exe`
 - 自动上传到对应 GitHub Release
 
 ## 本地打包
@@ -170,7 +170,7 @@ macOS 本地签名：
 
 - Linux：`linux_<arch>.tar.gz`
 - macOS：`darwin_<arch>.tar.gz`
-- Windows：`windows_<arch>.zip`
+- Windows：`windows_<arch>.exe`
 
 说明：本地打包为“本机打本机”（Windows 打 Windows，macOS 打 macOS，Linux 打 Linux）。
 

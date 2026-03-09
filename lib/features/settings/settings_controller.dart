@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:cpaclient/core/constants/core_defaults.dart';
@@ -16,6 +17,26 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
 
 enum WebdavStatusLevel { idle, running, success, failure }
+
+class WebdavBackupVersion {
+  const WebdavBackupVersion({
+    required this.id,
+    required this.displayLabel,
+  });
+
+  final String id;
+  final String displayLabel;
+}
+
+class _WebdavVersionListingResult {
+  const _WebdavVersionListingResult({
+    required this.root,
+    required this.versions,
+  });
+
+  final String root;
+  final List<String> versions;
+}
 
 class SettingsController extends ChangeNotifier {
   SettingsController();
@@ -319,8 +340,11 @@ class SettingsController extends ChangeNotifier {
       final port = await AppServices.sandboxConfig.readPort();
       final secretKey = await _resolveManagementKeyForUsage();
       await _exportUsageJson(localUsageJsonPath: usageJsonPath, port: port, secretKey: secretKey);
+      final versionId = _newBackupVersionId();
+      final versionRoot = '${CoreDefaults.webdavBackupVersionsDirName}/$versionId';
+      final remoteArchivePath = '$versionRoot/backup.tar.gz';
       await AppServices.log.info(
-        'WebDAV backup start: url=${settings.webdavUrl} local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length} usage=$usageJsonPath isAuto=$isAuto',
+        'WebDAV backup start: url=${settings.webdavUrl} version=$versionId local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length} usage=$usageJsonPath isAuto=$isAuto',
       );
       final client = _createWebdavClient(
         url: settings.webdavUrl,
@@ -328,27 +352,29 @@ class SettingsController extends ChangeNotifier {
         password: settings.webdavPassword,
         debug: false,
       );
+
+      final archivePath = await _buildBackupArchive(
+        localConfigPath: cfg.path,
+        localUsageJsonPath: usageJsonPath,
+        localAuthJsonFiles: authJsonFiles,
+      );
       try {
-        await _writeConfigToWebdav(client: client, localConfigPath: cfg.path);
-        await _writeAuthJsonToWebdav(
+        await _writeBackupArchiveToWebdav(
           client: client,
-          localAuthDir: authRoot,
-          localJsonFiles: authJsonFiles,
+          localArchivePath: archivePath,
+          remoteArchivePath: remoteArchivePath,
         );
-        await _writeUsageJsonToWebdav(client: client, localUsageJsonPath: usageJsonPath);
-      } catch (e) {
-        if (_shouldTryParentFallback(e)) {
-          await _writeConfigToWebdavFromParent(localConfigPath: cfg.path);
-          await _writeAuthJsonToWebdavFromParent(
-            localAuthDir: authRoot,
-            localJsonFiles: authJsonFiles,
-          );
-          await _writeUsageJsonToWebdavFromParent(localUsageJsonPath: usageJsonPath);
-        } else {
-          rethrow;
+      } finally {
+        final archiveFile = File(archivePath);
+        if (archiveFile.existsSync()) {
+          archiveFile.deleteSync();
         }
       }
-      final msg = '已备份 config.yaml + auth-json(${authJsonFiles.length}) + usage.json';
+
+      final cleanupWarning = await _cleanupOldWebdavBackups();
+      final msgBase =
+          '已备份压缩包版本 $versionId（backup.tar.gz，最多保留 ${CoreDefaults.webdavBackupMaxVersions} 个）';
+      final msg = cleanupWarning == null ? msgBase : '$msgBase；$cleanupWarning';
       await AppServices.log.info('WebDAV backup success: $msg, isAuto=$isAuto');
       if (!isAuto) {
         _setWebdavStatus(WebdavStatusLevel.success, msg);
@@ -365,48 +391,62 @@ class SettingsController extends ChangeNotifier {
     }
   }
 
-  Future<String> restoreConfigFromWebdav() async {
+  Future<String> restoreConfigFromWebdav({required String versionId}) async {
     if (settings.webdavUrl.trim().isEmpty) {
       const msg = '请先填写 WebDAV 地址';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
     }
+
+    final selectedVersionId = versionId.trim();
+    if (selectedVersionId.isEmpty) {
+      const msg = '请选择要还原的备份版本';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
+    }
+
+    final remoteArchivePath =
+        '${CoreDefaults.webdavBackupVersionsDirName}/$selectedVersionId/backup.tar.gz';
+
     _setWebdavStatus(WebdavStatusLevel.running, '正在还原配置...');
     try {
       final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
       final authDir = await AppServices.sandboxConfig.readAuthDir();
       final authRoot = AppServices.paths.resolveAuthDir(authDir);
       final usageJsonPath = p.join(cfg.parent.path, _usageJsonFileName);
+      final localArchivePath = p.join(cfg.parent.path, 'webdav_restore_backup.tar.gz');
       await AppServices.log.info(
-        'WebDAV restore start: url=${settings.webdavUrl} local=${cfg.path} restoreTo=${authRoot.path} usage=$usageJsonPath',
+        'WebDAV restore start: url=${settings.webdavUrl} version=$selectedVersionId local=${cfg.path} restoreTo=${authRoot.path} usage=$usageJsonPath archive=$localArchivePath',
       );
+
       final client = _createWebdavClient(
         url: settings.webdavUrl,
         username: settings.webdavUsername,
         password: settings.webdavPassword,
         debug: false,
       );
+
+      await _readBackupArchiveFromWebdav(
+        client: client,
+        localArchivePath: localArchivePath,
+        remoteArchivePath: remoteArchivePath,
+      );
+
       int restoredJsonCount = 0;
       try {
-        await _readConfigFromWebdav(client: client, localConfigPath: cfg.path);
-        restoredJsonCount = await _readAuthJsonFromWebdav(
-          client: client,
+        restoredJsonCount = _extractBackupArchive(
+          localArchivePath: localArchivePath,
+          localConfigPath: cfg.path,
+          localUsageJsonPath: usageJsonPath,
           localAuthDir: authRoot,
-          remoteAuthJsonRoot: CoreDefaults.webdavAuthJsonDirName,
-          logPrefix: 'WebDAV restore auth-json',
         );
-        await _readUsageJsonFromWebdav(client: client, localUsageJsonPath: usageJsonPath);
-      } catch (e) {
-        if (_shouldTryParentFallback(e)) {
-          await _readConfigFromWebdavFromParent(localConfigPath: cfg.path);
-          restoredJsonCount = await _readAuthJsonFromWebdavFromParent(
-            localAuthDir: authRoot,
-          );
-          await _readUsageJsonFromWebdavFromParent(localUsageJsonPath: usageJsonPath);
-        } else {
-          rethrow;
+      } finally {
+        final archiveFile = File(localArchivePath);
+        if (archiveFile.existsSync()) {
+          archiveFile.deleteSync();
         }
       }
+
       await _restartCoreAfterRestore();
       final restoredPort = await AppServices.sandboxConfig.readPort();
       final restoredSecretKey = await _resolveManagementKeyForUsage();
@@ -418,8 +458,10 @@ class SettingsController extends ChangeNotifier {
       currentPort = restoredPort;
       webuiPassword = restoredSecretKey;
       notifyListeners();
-      await AppServices.log.info('WebDAV restore success: config.yaml + auth-json($restoredJsonCount) + usage.json');
-      final msg = '已还原 config.yaml + auth-json($restoredJsonCount) + usage.json，并重启核心';
+      await AppServices.log.info(
+        'WebDAV restore success: version=$selectedVersionId archive=backup.tar.gz auth-json($restoredJsonCount)',
+      );
+      final msg = '已解压还原版本 $selectedVersionId（backup.tar.gz，auth-json $restoredJsonCount 个），并重启核心';
       _setWebdavStatus(WebdavStatusLevel.success, msg);
       return msg;
     } catch (e) {
@@ -442,414 +484,292 @@ class SettingsController extends ChangeNotifier {
         .toList(growable: false);
   }
 
-  Future<void> _writeConfigToWebdav({
-    required dynamic client,
-    required String localConfigPath,
-  }) async {
-    await _writeConfigWithCandidates(
-      client: client,
-      localConfigPath: localConfigPath,
-      remoteCandidates: const ['config.yaml', '/config.yaml'],
-      logPrefix: 'WebDAV backup',
-    );
+  List<String> _remotePathCandidates(String remotePath) {
+    final normalized = remotePath.startsWith('/')
+        ? remotePath.substring(1)
+        : remotePath;
+    return <String>[normalized, '/$normalized'];
   }
 
-  Future<void> _writeUsageJsonToWebdav({
-    required dynamic client,
-    required String localUsageJsonPath,
-  }) async {
-    await _writeUsageJsonWithCandidates(
-      client: client,
-      localUsageJsonPath: localUsageJsonPath,
-      remoteCandidates: const [_usageJsonFileName, '/$_usageJsonFileName'],
-      logPrefix: 'WebDAV backup usage-json',
-    );
+  String _newBackupVersionId() {
+    final now = DateTime.now().toUtc();
+    String pad2(int value) => value.toString().padLeft(2, '0');
+    return '${now.year}${pad2(now.month)}${pad2(now.day)}T${pad2(now.hour)}${pad2(now.minute)}${pad2(now.second)}Z';
   }
 
-  Future<void> _writeConfigToWebdavFromParent({required String localConfigPath}) async {
-    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
-    if (parentUrl == settings.webdavUrl) {
-      throw Exception('父级 WebDAV 地址未变化，无法执行回退写入');
+  DateTime? _parseBackupVersionTime(String versionId) {
+    final match = RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$').firstMatch(versionId);
+    if (match == null) {
+      return null;
     }
-    await AppServices.log.info('WebDAV backup fallback to parent url: $parentUrl');
-    final parentClient = _createWebdavClient(
-      url: parentUrl,
+    return DateTime.utc(
+      int.parse(match.group(1)!),
+      int.parse(match.group(2)!),
+      int.parse(match.group(3)!),
+      int.parse(match.group(4)!),
+      int.parse(match.group(5)!),
+      int.parse(match.group(6)!),
+    );
+  }
+
+  String _formatBackupVersionLabel(String versionId) {
+    final time = _parseBackupVersionTime(versionId);
+    if (time == null) {
+      return versionId;
+    }
+    final local = time.toLocal();
+    String pad2(int value) => value.toString().padLeft(2, '0');
+    return '${local.year}-${pad2(local.month)}-${pad2(local.day)} ${pad2(local.hour)}:${pad2(local.minute)}:${pad2(local.second)}';
+  }
+
+  Future<_WebdavVersionListingResult> _listVersionDirectories() async {
+    final client = _createWebdavClient(
+      url: settings.webdavUrl,
       username: settings.webdavUsername,
       password: settings.webdavPassword,
       debug: false,
     );
-    await _writeConfigWithCandidates(
-      client: parentClient,
-      localConfigPath: localConfigPath,
-      remoteCandidates: const [
-        'CpaClient/config.yaml',
-        '/CpaClient/config.yaml',
-        'config.yaml',
-        '/config.yaml',
-      ],
-      logPrefix: 'WebDAV backup(parent)',
-    );
-  }
+    final root = CoreDefaults.webdavBackupVersionsDirName;
 
-  Future<void> _writeUsageJsonToWebdavFromParent({required String localUsageJsonPath}) async {
-    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
-    if (parentUrl == settings.webdavUrl) {
-      throw Exception('父级 WebDAV 地址未变化，无法执行回退写入 usage.json');
-    }
-    await AppServices.log.info('WebDAV backup usage-json fallback to parent url: $parentUrl');
-    final parentClient = _createWebdavClient(
-      url: parentUrl,
-      username: settings.webdavUsername,
-      password: settings.webdavPassword,
-      debug: false,
-    );
-    await _writeUsageJsonWithCandidates(
-      client: parentClient,
-      localUsageJsonPath: localUsageJsonPath,
-      remoteCandidates: const [
-        'CpaClient/$_usageJsonFileName',
-        '/CpaClient/$_usageJsonFileName',
-        _usageJsonFileName,
-        '/$_usageJsonFileName',
-      ],
-      logPrefix: 'WebDAV backup(parent) usage-json',
-    );
-  }
-
-  Future<void> _writeConfigWithCandidates({
-    required dynamic client,
-    required String localConfigPath,
-    required List<String> remoteCandidates,
-    required String logPrefix,
-  }) async {
-    Object? lastError;
-    for (final remotePath in remoteCandidates) {
-      try {
-        await AppServices.log.info('$logPrefix try path: $remotePath');
-        await client.writeFromFile(localConfigPath, remotePath);
-        await AppServices.log.info('$logPrefix path success: $remotePath');
-        return;
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
-      }
-    }
-    throw Exception('上传 config.yaml 失败: ${_formatDioError(lastError ?? 'unknown error')}');
-  }
-
-  Future<void> _writeUsageJsonWithCandidates({
-    required dynamic client,
-    required String localUsageJsonPath,
-    required List<String> remoteCandidates,
-    required String logPrefix,
-  }) async {
-    final localFile = File(localUsageJsonPath);
-    if (!localFile.existsSync()) {
-      throw Exception('usage.json 不存在: $localUsageJsonPath');
-    }
-    Object? lastError;
-    for (final remotePath in remoteCandidates) {
-      try {
-        await AppServices.log.info('$logPrefix try path: $remotePath');
-        await client.writeFromFile(localUsageJsonPath, remotePath);
-        await AppServices.log.info('$logPrefix path success: $remotePath');
-        return;
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
-      }
-    }
-    throw Exception('上传 usage.json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
-  }
-
-  Future<void> _writeAuthJsonToWebdav({
-    required dynamic client,
-    required Directory localAuthDir,
-    required List<File> localJsonFiles,
-  }) async {
-    await _writeAuthJsonWithCandidates(
-      client: client,
-      localAuthDir: localAuthDir,
-      localJsonFiles: localJsonFiles,
-      remoteRootCandidates: const [
-        CoreDefaults.webdavAuthJsonDirName,
-        '/${CoreDefaults.webdavAuthJsonDirName}',
-      ],
-      logPrefix: 'WebDAV backup auth-json',
-    );
-  }
-
-  Future<void> _writeAuthJsonToWebdavFromParent({
-    required Directory localAuthDir,
-    required List<File> localJsonFiles,
-  }) async {
-    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
-    if (parentUrl == settings.webdavUrl) {
-      throw Exception('父级 WebDAV 地址未变化，无法执行回退写入 auth-json');
-    }
-    await AppServices.log.info('WebDAV backup auth-json fallback to parent url: $parentUrl');
-    final parentClient = _createWebdavClient(
-      url: parentUrl,
-      username: settings.webdavUsername,
-      password: settings.webdavPassword,
-      debug: false,
-    );
-    await _writeAuthJsonWithCandidates(
-      client: parentClient,
-      localAuthDir: localAuthDir,
-      localJsonFiles: localJsonFiles,
-      remoteRootCandidates: const [
-        'CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
-        '/CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
-        CoreDefaults.webdavAuthJsonDirName,
-        '/${CoreDefaults.webdavAuthJsonDirName}',
-      ],
-      logPrefix: 'WebDAV backup(parent) auth-json',
-    );
-  }
-
-  Future<void> _writeAuthJsonWithCandidates({
-    required dynamic client,
-    required Directory localAuthDir,
-    required List<File> localJsonFiles,
-    required List<String> remoteRootCandidates,
-    required String logPrefix,
-  }) async {
-    if (!localAuthDir.existsSync()) {
-      await AppServices.log.info(
-        '$logPrefix local root not found, skip upload: ${localAuthDir.path}',
-      );
-      return;
-    }
-    if (localJsonFiles.isEmpty) {
-      await AppServices.log.info('$logPrefix no local json files under ${localAuthDir.path}');
-      return;
-    }
-
-    Object? lastError;
-    for (final remoteRoot in remoteRootCandidates) {
-      try {
-        await AppServices.log.info('$logPrefix try root: $remoteRoot');
-        await client.mkdirAll(remoteRoot);
-        for (final localFile in localJsonFiles) {
-          final fileName = p.basename(localFile.path);
-          final remotePath = '$remoteRoot/$fileName';
-          await client.writeFromFile(localFile.path, remotePath);
-        }
-        await AppServices.log.info('$logPrefix root success: $remoteRoot, files=${localJsonFiles.length}');
-        return;
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error('$logPrefix root failed: $remoteRoot', _formatDioError(e));
-      }
-    }
-    throw Exception('上传 auth-json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
-  }
-
-  Future<int> _readAuthJsonFromWebdav({
-    required dynamic client,
-    required Directory localAuthDir,
-    required String remoteAuthJsonRoot,
-    required String logPrefix,
-  }) async {
-    await AppServices.log.info('$logPrefix list remote root: $remoteAuthJsonRoot');
-    late final List<dynamic> entries;
     try {
-      entries = await client.readDir(remoteAuthJsonRoot);
+      final entries = await client.readDir(root);
+      final versions = <String>[];
+      for (final entry in entries.where((entry) => entry.isDir == true)) {
+        final name = p.basename((entry.path ?? '').replaceAll('\\', '/'));
+        if (_parseBackupVersionTime(name) == null) {
+          continue;
+        }
+        final remoteArchivePath = '$root/$name/backup.tar.gz';
+        if (await _remoteFileExists(client: client, remotePath: remoteArchivePath)) {
+          versions.add(name);
+        }
+      }
+      final sorted = versions.toSet().toList(growable: false)
+        ..sort((String a, String b) => b.compareTo(a));
+      return _WebdavVersionListingResult(root: root, versions: sorted);
     } catch (e) {
       if (_isRemoteNotFound(e)) {
-        await AppServices.log.info('$logPrefix remote root not found, skip restore: $remoteAuthJsonRoot');
-        return 0;
+        return _WebdavVersionListingResult(root: root, versions: const <String>[]);
       }
       rethrow;
     }
-    final jsonEntries = entries
-        .where((entry) => entry.isDir != true)
-        .where((entry) => (entry.path ?? '').toLowerCase().endsWith('.json'))
+  }
+
+  Future<List<WebdavBackupVersion>> listWebdavBackupVersions() async {
+    if (settings.webdavUrl.trim().isEmpty) {
+      return const <WebdavBackupVersion>[];
+    }
+
+    final listing = await _listVersionDirectories();
+    return listing.versions
+        .map((id) => WebdavBackupVersion(id: id, displayLabel: _formatBackupVersionLabel(id)))
         .toList(growable: false);
-
-    if (jsonEntries.isEmpty) {
-      await AppServices.log.info('$logPrefix no json files under remote root: $remoteAuthJsonRoot');
-      return 0;
-    }
-
-    if (!localAuthDir.existsSync()) {
-      localAuthDir.createSync(recursive: true);
-    }
-
-    var restoredCount = 0;
-    for (final remoteFile in jsonEntries) {
-      final remotePath = remoteFile.path;
-      if (remotePath == null || remotePath.trim().isEmpty) {
-        continue;
-      }
-      final fileName = p.basename(remotePath);
-      final localPath = p.join(localAuthDir.path, fileName);
-      await client.read2File(remotePath, localPath);
-      restoredCount += 1;
-    }
-
-    await AppServices.log.info('$logPrefix restored json files: $restoredCount');
-    return restoredCount;
   }
 
-  Future<int> _readAuthJsonFromWebdavFromParent({
+  Future<String?> _cleanupOldWebdavBackups() async {
+    try {
+      final listing = await _listVersionDirectories();
+      if (listing.versions.length <= CoreDefaults.webdavBackupMaxVersions) {
+        return null;
+      }
+      final toDelete = listing.versions.skip(CoreDefaults.webdavBackupMaxVersions);
+      final client = _createWebdavClient(
+        url: settings.webdavUrl,
+        username: settings.webdavUsername,
+        password: settings.webdavPassword,
+        debug: false,
+      );
+      for (final version in toDelete) {
+        await client.removeAll('${listing.root}/$version');
+      }
+      return null;
+    } catch (e) {
+      await AppServices.log.error('WebDAV backup cleanup failed', _formatDioError(e));
+      return '清理旧版本失败（不影响本次备份）';
+    }
+  }
+
+  Future<bool> _remoteFileExists({
+    required dynamic client,
+    required String remotePath,
+  }) async {
+    try {
+      await client.read(remotePath);
+      return true;
+    } catch (e) {
+      if (_isRemoteNotFound(e)) {
+        return false;
+      }
+      rethrow;
+    }
+  }
+
+  Future<String> _buildBackupArchive({
+    required String localConfigPath,
+    required String localUsageJsonPath,
+    required List<File> localAuthJsonFiles,
+  }) async {
+    final configFile = File(localConfigPath);
+    final usageFile = File(localUsageJsonPath);
+    if (!configFile.existsSync()) {
+      throw Exception('config.yaml 不存在: $localConfigPath');
+    }
+    if (!usageFile.existsSync()) {
+      throw Exception('usage.json 不存在: $localUsageJsonPath');
+    }
+
+    final tmpDir = await Directory.systemTemp.createTemp('cpaclient_webdav_backup_');
+    final archivePath = p.join(tmpDir.path, 'backup.tar.gz');
+
+    final archive = Archive()
+      ..addFile(ArchiveFile('config.yaml', configFile.lengthSync(), configFile.readAsBytesSync()))
+      ..addFile(ArchiveFile('usage.json', usageFile.lengthSync(), usageFile.readAsBytesSync()));
+
+    for (final jsonFile in localAuthJsonFiles) {
+      final name = p.basename(jsonFile.path);
+      final bytes = jsonFile.readAsBytesSync();
+      archive.addFile(ArchiveFile('${CoreDefaults.webdavAuthJsonDirName}/$name', bytes.length, bytes));
+    }
+
+    final tarData = TarEncoder().encode(archive);
+    final gzipData = GZipEncoder().encode(tarData);
+
+    await File(archivePath).writeAsBytes(gzipData, flush: true);
+    return archivePath;
+  }
+
+  Future<void> _writeBackupArchiveToWebdav({
+    required dynamic client,
+    required String localArchivePath,
+    required String remoteArchivePath,
+  }) async {
+    await _writeFileWithCandidates(
+      client: client,
+      localFilePath: localArchivePath,
+      remoteCandidates: _remotePathCandidates(remoteArchivePath),
+      logPrefix: 'WebDAV backup archive',
+    );
+  }
+
+  Future<void> _writeFileWithCandidates({
+    required dynamic client,
+    required String localFilePath,
+    required List<String> remoteCandidates,
+    required String logPrefix,
+  }) async {
+    final localFile = File(localFilePath);
+    if (!localFile.existsSync()) {
+      throw Exception('本地文件不存在: $localFilePath');
+    }
+    Object? lastError;
+    for (final remotePath in remoteCandidates) {
+      try {
+        await AppServices.log.info('$logPrefix try path: $remotePath');
+        await client.writeFromFile(localFilePath, remotePath);
+        await AppServices.log.info('$logPrefix path success: $remotePath');
+        return;
+      } catch (e) {
+        lastError = e;
+        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
+      }
+    }
+    throw Exception('上传文件失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
+  Future<void> _readBackupArchiveFromWebdav({
+    required dynamic client,
+    required String localArchivePath,
+    required String remoteArchivePath,
+  }) async {
+    await _readFileWithCandidates(
+      client: client,
+      localFilePath: localArchivePath,
+      remoteCandidates: _remotePathCandidates(remoteArchivePath),
+      logPrefix: 'WebDAV restore archive',
+    );
+  }
+
+  Future<void> _readFileWithCandidates({
+    required dynamic client,
+    required String localFilePath,
+    required List<String> remoteCandidates,
+    required String logPrefix,
+  }) async {
+    Object? lastError;
+    for (final remotePath in remoteCandidates) {
+      try {
+        await AppServices.log.info('$logPrefix try path: $remotePath');
+        await client.read2File(remotePath, localFilePath);
+        await AppServices.log.info('$logPrefix path success: $remotePath');
+        return;
+      } catch (e) {
+        lastError = e;
+        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
+      }
+    }
+    throw Exception('下载文件失败: ${_formatDioError(lastError ?? 'unknown error')}');
+  }
+
+  int _extractBackupArchive({
+    required String localArchivePath,
+    required String localConfigPath,
+    required String localUsageJsonPath,
     required Directory localAuthDir,
-  }) async {
-    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
-    if (parentUrl == settings.webdavUrl) {
-      throw Exception('父级 WebDAV 地址未变化，无法执行回退读取 auth-json');
+  }) {
+    final archiveFile = File(localArchivePath);
+    if (!archiveFile.existsSync()) {
+      throw Exception('备份压缩包不存在: $localArchivePath');
     }
-    await AppServices.log.info('WebDAV restore auth-json fallback to parent url: $parentUrl');
-    final parentClient = _createWebdavClient(
-      url: parentUrl,
-      username: settings.webdavUsername,
-      password: settings.webdavPassword,
-      debug: false,
-    );
 
-    Object? lastError;
-    const candidates = <String>[
-      'CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
-      '/CpaClient/${CoreDefaults.webdavAuthJsonDirName}',
-      CoreDefaults.webdavAuthJsonDirName,
-      '/${CoreDefaults.webdavAuthJsonDirName}',
-    ];
+    final tmpDir = Directory.systemTemp.createTempSync('cpaclient_webdav_restore_');
+    try {
+      final compressed = archiveFile.readAsBytesSync();
+      final tarData = GZipDecoder().decodeBytes(compressed);
+      final archive = TarDecoder().decodeBytes(tarData);
+      for (final entry in archive.files.where((entry) => entry.isFile)) {
+        final outputPath = p.join(tmpDir.path, entry.name);
+        final outputFile = File(outputPath);
+        outputFile.parent.createSync(recursive: true);
+        outputFile.writeAsBytesSync(entry.content as List<int>, flush: true);
+      }
 
-    for (final remoteRoot in candidates) {
-      try {
-        return await _readAuthJsonFromWebdav(
-          client: parentClient,
-          localAuthDir: localAuthDir,
-          remoteAuthJsonRoot: remoteRoot,
-          logPrefix: 'WebDAV restore(parent) auth-json',
-        );
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error(
-          'WebDAV restore(parent) auth-json failed root: $remoteRoot',
-          _formatDioError(e),
-        );
+      final extractedConfig = File(p.join(tmpDir.path, 'config.yaml'));
+      final extractedUsage = File(p.join(tmpDir.path, 'usage.json'));
+      if (!extractedConfig.existsSync()) {
+        throw Exception('压缩包缺少 config.yaml');
+      }
+      if (!extractedUsage.existsSync()) {
+        throw Exception('压缩包缺少 usage.json');
+      }
+
+      extractedConfig.copySync(localConfigPath);
+      extractedUsage.copySync(localUsageJsonPath);
+
+      if (!localAuthDir.existsSync()) {
+        localAuthDir.createSync(recursive: true);
+      }
+
+      var restoredAuth = 0;
+      final extractedAuthDir = Directory(p.join(tmpDir.path, CoreDefaults.webdavAuthJsonDirName));
+      if (extractedAuthDir.existsSync()) {
+        final authJsonFiles = extractedAuthDir
+            .listSync(recursive: false, followLinks: false)
+            .whereType<File>()
+            .where((file) => file.path.toLowerCase().endsWith('.json'))
+            .toList(growable: false);
+        for (final file in authJsonFiles) {
+          final name = p.basename(file.path);
+          file.copySync(p.join(localAuthDir.path, name));
+          restoredAuth += 1;
+        }
+      }
+
+      return restoredAuth;
+    } finally {
+      if (tmpDir.existsSync()) {
+        tmpDir.deleteSync(recursive: true);
       }
     }
-
-    throw Exception('下载 auth-json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
-  }
-
-  Future<void> _readConfigFromWebdav({
-    required dynamic client,
-    required String localConfigPath,
-  }) async {
-    await _readConfigWithCandidates(
-      client: client,
-      localConfigPath: localConfigPath,
-      remoteCandidates: const ['config.yaml', '/config.yaml'],
-      logPrefix: 'WebDAV restore',
-    );
-  }
-
-  Future<void> _readUsageJsonFromWebdav({
-    required dynamic client,
-    required String localUsageJsonPath,
-  }) async {
-    await _readUsageJsonWithCandidates(
-      client: client,
-      localUsageJsonPath: localUsageJsonPath,
-      remoteCandidates: const [_usageJsonFileName, '/$_usageJsonFileName'],
-      logPrefix: 'WebDAV restore usage-json',
-    );
-  }
-
-  Future<void> _readConfigFromWebdavFromParent({required String localConfigPath}) async {
-    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
-    if (parentUrl == settings.webdavUrl) {
-      throw Exception('父级 WebDAV 地址未变化，无法执行回退读取');
-    }
-    await AppServices.log.info('WebDAV restore fallback to parent url: $parentUrl');
-    final parentClient = _createWebdavClient(
-      url: parentUrl,
-      username: settings.webdavUsername,
-      password: settings.webdavPassword,
-      debug: false,
-    );
-    await _readConfigWithCandidates(
-      client: parentClient,
-      localConfigPath: localConfigPath,
-      remoteCandidates: const [
-        'CpaClient/config.yaml',
-        '/CpaClient/config.yaml',
-        'config.yaml',
-        '/config.yaml',
-      ],
-      logPrefix: 'WebDAV restore(parent)',
-    );
-  }
-
-  Future<void> _readUsageJsonFromWebdavFromParent({required String localUsageJsonPath}) async {
-    final parentUrl = _parentWebdavUrl(settings.webdavUrl);
-    if (parentUrl == settings.webdavUrl) {
-      throw Exception('父级 WebDAV 地址未变化，无法执行回退读取 usage.json');
-    }
-    await AppServices.log.info('WebDAV restore usage-json fallback to parent url: $parentUrl');
-    final parentClient = _createWebdavClient(
-      url: parentUrl,
-      username: settings.webdavUsername,
-      password: settings.webdavPassword,
-      debug: false,
-    );
-    await _readUsageJsonWithCandidates(
-      client: parentClient,
-      localUsageJsonPath: localUsageJsonPath,
-      remoteCandidates: const [
-        'CpaClient/$_usageJsonFileName',
-        '/CpaClient/$_usageJsonFileName',
-        _usageJsonFileName,
-        '/$_usageJsonFileName',
-      ],
-      logPrefix: 'WebDAV restore(parent) usage-json',
-    );
-  }
-
-  Future<void> _readConfigWithCandidates({
-    required dynamic client,
-    required String localConfigPath,
-    required List<String> remoteCandidates,
-    required String logPrefix,
-  }) async {
-    Object? lastError;
-    for (final remotePath in remoteCandidates) {
-      try {
-        await AppServices.log.info('$logPrefix try path: $remotePath');
-        await client.read2File(remotePath, localConfigPath);
-        await AppServices.log.info('$logPrefix path success: $remotePath');
-        return;
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
-      }
-    }
-    throw Exception('下载 config.yaml 失败: ${_formatDioError(lastError ?? 'unknown error')}');
-  }
-
-  Future<void> _readUsageJsonWithCandidates({
-    required dynamic client,
-    required String localUsageJsonPath,
-    required List<String> remoteCandidates,
-    required String logPrefix,
-  }) async {
-    Object? lastError;
-    for (final remotePath in remoteCandidates) {
-      try {
-        await AppServices.log.info('$logPrefix try path: $remotePath');
-        await client.read2File(remotePath, localUsageJsonPath);
-        await AppServices.log.info('$logPrefix path success: $remotePath');
-        return;
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
-      }
-    }
-    throw Exception('下载 usage.json 失败: ${_formatDioError(lastError ?? 'unknown error')}');
   }
 
   Future<String> _resolveManagementKeyForUsage() async {
@@ -956,31 +876,6 @@ class SettingsController extends ChangeNotifier {
     }
     final text = error.toString();
     return text.contains('status=404') || text.contains('404 Not Found');
-  }
-
-  bool _shouldTryParentFallback(Object error) {
-    if (error is DioException) {
-      if (error.response?.statusCode == 409) {
-        return true;
-      }
-      final body = error.response?.data?.toString() ?? '';
-      if (body.contains('AncestorsNotFound')) {
-        return true;
-      }
-    }
-    final text = error.toString();
-    return text.contains('status=409') || text.contains('AncestorsNotFound');
-  }
-
-  String _parentWebdavUrl(String url) {
-    final uri = Uri.parse(url);
-    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-    if (segments.isEmpty) {
-      return url;
-    }
-    final parentSegments = segments.sublist(0, segments.length - 1);
-    final parentPath = parentSegments.isEmpty ? '/' : '/${parentSegments.join('/')}';
-    return uri.replace(path: parentPath).toString();
   }
 
   dynamic _createWebdavClient({

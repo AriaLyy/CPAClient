@@ -19,4 +19,6 @@ class CoreDefaults {
   static const String defaultAuthDir = '~/.cli-proxy-api';
   static const String webdavAuthJsonDirName = 'auth-json';
   static const String webdavAuthJsonIndexName = 'index.json';
+  static const String webdavBackupVersionsDirName = 'backups';
+  static const int webdavBackupMaxVersions = 20;
 }

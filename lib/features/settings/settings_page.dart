@@ -9,7 +9,6 @@ import 'package:window_manager/window_manager.dart';
 
 enum _SettingsSection { core, security, preferences, webdav, about }
 
-
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, required this.onThemeModeChanged});
 
@@ -33,8 +32,12 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _showWebdavPassword = false;
   _SettingsSection? _hoveredSection;
   _SettingsSection? _focusedSection;
+  _SettingsSection? _scrollTrackedSection;
+  _SettingsSection? _manualNavTarget;
   final ScrollController _desktopScrollController = ScrollController();
   bool _syncingDesktopScroll = false;
+  int _desktopScrollRequestToken = 0;
+  int _activeScrollLockToken = 0;
   late final Map<_SettingsSection, GlobalKey> _desktopSectionKeys = {
     for (final section in _SettingsSection.values) section: GlobalKey(),
   };
@@ -54,7 +57,7 @@ class _SettingsPageState extends State<SettingsPage> {
   static const double _sectionGap = 24;
   static const double _itemGap = 16;
   static const double _desktopContentMaxWidth = 760;
-  static const double _desktopSidebarWidth = 180;
+  static const double _desktopSidebarWidth = 200;
   static const double _uiIconSize = 16;
   static const double _controlMinHeight = 40;
 
@@ -252,7 +255,27 @@ class _SettingsPageState extends State<SettingsPage> {
       _restoringWebdav = true;
     });
     try {
-      await _run(_controller.restoreConfigFromWebdav);
+      final versions = await _controller.listWebdavBackupVersions();
+      if (!mounted) {
+        return;
+      }
+      if (versions.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('未发现可还原的 WebDAV 备份版本')),
+        );
+        return;
+      }
+
+      final selected = versions.length == 1
+          ? versions.first
+          : await _showWebdavRestoreVersionDialog(versions);
+
+      if (selected == null) {
+        return;
+      }
+
+      await _run(
+          () => _controller.restoreConfigFromWebdav(versionId: selected.id));
     } finally {
       if (mounted) {
         setState(() {
@@ -305,18 +328,94 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Future<WebdavBackupVersion?> _showWebdavRestoreVersionDialog(
+    List<WebdavBackupVersion> versions,
+  ) async {
+    var selected = versions.first;
+    return showDialog<WebdavBackupVersion>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('选择恢复版本'),
+              content: SizedBox(
+                width: 460,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 360),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: versions.length,
+                    itemBuilder: (context, index) {
+                      final item = versions[index];
+                      return RadioListTile<String>(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        value: item.id,
+                        groupValue: selected.id,
+                        title: Text(item.displayLabel),
+                        onChanged: (_) {
+                          setState(() {
+                            selected = item;
+                          });
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  style: _textControlStyle(),
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  style: _filledControlStyle(),
+                  onPressed: () => Navigator.of(ctx).pop(selected),
+                  child: const Text('还原'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  TextStyle? _promptTextStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.78),
+    );
+  }
+
+  TextStyle? _versionUpdatePromptTextStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.primary,
+      fontWeight: FontWeight.w600,
+    );
+  }
+
   InputDecoration _inputDecoration({
     required String label,
     String? hint,
     String? helper,
     String? error,
     Widget? suffixIcon,
+    TextStyle? hintStyle,
+    TextStyle? helperStyle,
   }) {
     final scheme = Theme.of(context).colorScheme;
+    final promptStyle = _promptTextStyle(context);
     return InputDecoration(
       labelText: label,
       hintText: hint,
+      hintStyle: hintStyle ?? promptStyle,
       helperText: helper,
+      helperStyle: helperStyle ?? promptStyle,
       errorText: error,
       suffixIcon: suffixIcon,
       filled: true,
@@ -418,15 +517,13 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _metricRow({required String label, required String value}) {
-    final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     return Row(
       children: [
         Expanded(
           child: Text(
             label,
-            style:
-                textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            style: _promptTextStyle(context),
           ),
         ),
         const SizedBox(width: 8),
@@ -558,9 +655,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       const SizedBox(height: 3),
                       Text(
                         subtitle,
-                        style: textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
+                        style: _promptTextStyle(context),
                       ),
                     ],
                   ),
@@ -619,8 +714,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 6),
           Text(
             description,
-            style:
-                textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            style: _promptTextStyle(context),
           ),
           const SizedBox(height: 10),
           child,
@@ -645,10 +739,10 @@ class _SettingsPageState extends State<SettingsPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '设置概览',
+              '核心概览',
               style: textTheme.labelMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
               ),
             ),
             const SizedBox(height: 10),
@@ -701,10 +795,41 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  int _beginManualSectionNavigation(_SettingsSection section) {
+    final token = ++_desktopScrollRequestToken;
+    setState(() {
+      _manualNavTarget = section;
+      _activeSection = section;
+      _activeScrollLockToken = token;
+      _syncingDesktopScroll = true;
+    });
+    return token;
+  }
+
+  void _endManualSectionNavigation(int token) {
+    if (!mounted || _activeScrollLockToken != token) {
+      return;
+    }
+    setState(() {
+      _activeScrollLockToken = 0;
+      _syncingDesktopScroll = false;
+    });
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 800), () {
+        if (!mounted ||
+            _activeScrollLockToken != 0 ||
+            _manualNavTarget == null) {
+          return;
+        }
+        setState(() {
+          _manualNavTarget = null;
+        });
+      }),
+    );
+  }
+
   void _syncActiveSectionFromScroll() {
-    if (_syncingDesktopScroll ||
-        !_desktopScrollController.hasClients ||
-        !mounted) {
+    if (!_desktopScrollController.hasClients || !mounted) {
       return;
     }
     _SettingsSection? candidate;
@@ -725,30 +850,94 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     }
 
-    if (candidate != null && candidate != _activeSection) {
-      setState(() {
-        _activeSection = candidate!;
-      });
-    }
-  }
-
-  Future<void> _scrollToDesktopSection(_SettingsSection section) async {
-    setState(() {
-      _activeSection = section;
-    });
-    final targetContext = _desktopSectionKeys[section]?.currentContext;
-    if (targetContext == null) {
+    if (candidate == null) {
       return;
     }
-    _syncingDesktopScroll = true;
-    await Scrollable.ensureVisible(
-      targetContext,
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
-      alignment: 0.04,
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 80));
-    _syncingDesktopScroll = false;
+
+    final needsTrackedUpdate = candidate != _scrollTrackedSection;
+    final manualTarget = _manualNavTarget;
+    if (manualTarget != null) {
+      if (candidate != manualTarget) {
+        if (!needsTrackedUpdate) {
+          return;
+        }
+        setState(() {
+          _scrollTrackedSection = candidate;
+        });
+        return;
+      }
+      setState(() {
+        _scrollTrackedSection = candidate;
+        _activeSection = candidate!;
+        _manualNavTarget = null;
+      });
+      return;
+    }
+
+    final hasManualLock = _syncingDesktopScroll && _activeScrollLockToken != 0;
+    final needsActiveUpdate = !hasManualLock && candidate != _activeSection;
+    if (!needsTrackedUpdate && !needsActiveUpdate) {
+      return;
+    }
+
+    setState(() {
+      _scrollTrackedSection = candidate;
+      if (!hasManualLock) {
+        _activeSection = candidate!;
+      }
+    });
+  }
+
+  Future<void> _waitForDesktopScrollIdle() async {
+    if (!_desktopScrollController.hasClients) {
+      return;
+    }
+    final position = _desktopScrollController.position;
+    if (!position.isScrollingNotifier.value) {
+      await WidgetsBinding.instance.endOfFrame;
+      return;
+    }
+
+    final completer = Completer<void>();
+    late VoidCallback listener;
+    listener = () {
+      if (!position.isScrollingNotifier.value && !completer.isCompleted) {
+        completer.complete();
+      }
+    };
+
+    position.isScrollingNotifier.addListener(listener);
+    try {
+      await completer.future.timeout(
+        const Duration(milliseconds: 900),
+        onTimeout: () {},
+      );
+    } finally {
+      position.isScrollingNotifier.removeListener(listener);
+    }
+
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
+  Future<void> _scrollToDesktopSection(
+      _SettingsSection section, int token) async {
+    try {
+      final targetContext = _desktopSectionKeys[section]?.currentContext;
+      if (targetContext == null ||
+          !mounted ||
+          _activeScrollLockToken != token) {
+        return;
+      }
+      await Scrollable.ensureVisible(
+        targetContext,
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic,
+        alignment: 0.04,
+      );
+      await _waitForDesktopScrollIdle();
+    } finally {
+      _endManualSectionNavigation(token);
+    }
   }
 
   Widget _buildNavigationPanel() {
@@ -758,23 +947,23 @@ class _SettingsPageState extends State<SettingsPage> {
     return Card(
       margin: EdgeInsets.zero,
       elevation: 0,
-      color: scheme.surface,
+      color: scheme.surfaceContainerLow,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.55)),
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.34)),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(8, 6, 8, 10),
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
               child: Text(
                 '设置导航',
                 style: textTheme.labelMedium?.copyWith(
                   color: scheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
@@ -785,114 +974,93 @@ class _SettingsPageState extends State<SettingsPage> {
                   final hovered = _hoveredSection == section;
                   final focused = _focusedSection == section;
                   final bgColor = selected
-                      ? scheme.primary.withValues(alpha: 0.12)
+                      ? scheme.secondaryContainer
                       : hovered
-                          ? scheme.surfaceContainerHigh.withValues(alpha: 0.8)
-                          : focused
-                              ? scheme.surfaceContainerHigh
-                                  .withValues(alpha: 0.7)
-                              : Colors.transparent;
-                  final borderColor = selected
-                      ? scheme.primary.withValues(alpha: 0.26)
-                      : hovered || focused
-                          ? scheme.outlineVariant.withValues(alpha: 0.6)
+                          ? scheme.onSurface.withValues(alpha: 0.06)
                           : Colors.transparent;
+                  final borderColor = focused
+                      ? scheme.outline.withValues(alpha: 0.5)
+                      : Colors.transparent;
                   final titleColor =
-                      selected ? scheme.primary : scheme.onSurface;
+                      selected ? scheme.onSecondaryContainer : scheme.onSurface;
 
-                  return MouseRegion(
-                    onEnter: (_) {
+                  return Focus(
+                    onFocusChange: (hasFocus) {
                       setState(() {
-                        _hoveredSection = section;
+                        if (hasFocus) {
+                          _focusedSection = section;
+                        } else if (_focusedSection == section) {
+                          _focusedSection = null;
+                        }
                       });
                     },
-                    onExit: (_) {
-                      if (_hoveredSection == section) {
-                        setState(() {
-                          _hoveredSection = null;
-                        });
-                      }
-                    },
-                    child: Focus(
-                      onFocusChange: (hasFocus) {
-                        setState(() {
-                          if (hasFocus) {
-                            _focusedSection = section;
-                          } else if (_focusedSection == section) {
-                            _focusedSection = null;
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onHover: (hovering) {
+                        if (hovering) {
+                          if (_hoveredSection != section) {
+                            setState(() {
+                              _hoveredSection = section;
+                            });
                           }
-                        });
+                        } else if (_hoveredSection == section) {
+                          setState(() {
+                            _hoveredSection = null;
+                          });
+                        }
                       },
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: () {
-                          if (selected) {
-                            return;
-                          }
-                          unawaited(_scrollToDesktopSection(section));
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 160),
-                          curve: Curves.easeOutCubic,
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: bgColor,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: borderColor),
-                          ),
-                          child: Row(
-                            children: [
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 160),
-                                width: 3,
-                                height: 18,
+                      onTap: () {
+                        if (selected && _manualNavTarget == null) {
+                          return;
+                        }
+                        final token = _beginManualSectionNavigation(section);
+                        unawaited(_scrollToDesktopSection(section, token));
+                      },
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 11),
+                        decoration: BoxDecoration(
+                          color: bgColor,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: borderColor),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              _sectionIcon(section),
+                              size: _uiIconSize,
+                              color: titleColor,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _sectionTitle(section),
+                                style: textTheme.labelMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: titleColor,
+                                ),
+                              ),
+                            ),
+                            if (_sectionIndicatorColor(section, context) !=
+                                null)
+                              Container(
+                                width: 8,
+                                height: 8,
                                 decoration: BoxDecoration(
-                                  color: selected
-                                      ? scheme.primary
-                                      : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(99),
+                                  color:
+                                      _sectionIndicatorColor(section, context),
+                                  shape: BoxShape.circle,
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              Icon(
-                                _sectionIcon(section),
-                                size: _uiIconSize,
-                                color: titleColor,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  _sectionTitle(section),
-                                  style: textTheme.labelLarge?.copyWith(
-                                    fontWeight: selected
-                                        ? FontWeight.w700
-                                        : FontWeight.w600,
-                                    color: titleColor,
-                                  ),
-                                ),
-                              ),
-                              if (_sectionIndicatorColor(section, context) !=
-                                  null)
-                                Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: _sectionIndicatorColor(
-                                        section, context),
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                            ],
-                          ),
+                          ],
                         ),
                       ),
                     ),
                   );
                 },
               ),
-              if (section != sections.last) const SizedBox(height: 6),
+              if (section != sections.last) const SizedBox(height: 8),
             ],
           ],
         ),
@@ -926,8 +1094,8 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 4),
             Text(
               statusMessage,
-              style: textTheme.bodySmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
+              style:
+                  textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: _itemGap),
           ],
@@ -938,6 +1106,9 @@ class _SettingsPageState extends State<SettingsPage> {
               helper: hasNewVersion
                   ? '检测到新版本 $latestVersion，可点击「更新核心」升级'
                   : '当前已是最近版本',
+              helperStyle: hasNewVersion
+                  ? _versionUpdatePromptTextStyle(context)
+                  : _promptTextStyle(context),
             ),
             items: versions
                 .map((v) => DropdownMenuItem<String>(value: v, child: Text(v)))
@@ -1015,8 +1186,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(0, _controlMinHeight),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
@@ -1031,8 +1202,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(0, _controlMinHeight),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
@@ -1096,7 +1267,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   contentPadding: EdgeInsets.zero,
                   value: _controller.settings.keepGithubToken,
                   title: const Text('本地保持 Token'),
-                  subtitle: const Text('关闭后将不在本地保留 Token'),
+                  subtitle: Text(
+                    '关闭后将不在本地保留 Token',
+                    style: _promptTextStyle(context),
+                  ),
                   onChanged: (value) =>
                       _run(() => _controller.saveKeepGithubToken(value)),
                 ),
@@ -1164,8 +1338,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 const SizedBox(height: 6),
                 Text(
                   '提示：请妥善保管该密钥，避免泄露。',
-                  style: textTheme.bodySmall
-                      ?.copyWith(color: scheme.onSurfaceVariant),
+                  style: _promptTextStyle(context),
                 ),
               ],
             ),
@@ -1176,8 +1349,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildPreferencesSection() {
-    final scheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
     return _sectionCard(
       icon: Icons.tune_rounded,
       title: '应用偏好',
@@ -1244,8 +1415,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 8),
           Text(
             '主题会即时生效，并同步保存到本地设置。',
-            style:
-                textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            style: _promptTextStyle(context),
           ),
         ],
       ),
@@ -1325,8 +1495,8 @@ class _SettingsPageState extends State<SettingsPage> {
           if (_controller.settings.webdavAutoBackupEnabled) ...[
             const SizedBox(height: 12),
             DropdownButtonFormField<int>(
-              value: SettingsController.webdavAutoBackupIntervals.contains(
-                      intervalMinutes)
+              value: SettingsController.webdavAutoBackupIntervals
+                      .contains(intervalMinutes)
                   ? intervalMinutes
                   : 60,
               decoration: _inputDecoration(

@@ -58,3 +58,6 @@ windows/flutter/ephemeral/
 
 # FVM (optional)
 .fvm/
+
+release
+__pycache__

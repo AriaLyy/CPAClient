@@ -9,12 +9,33 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 
+def _resolve_executable(name: str) -> str:
+    candidates = [name]
+    if platform.system() == "Windows":
+        candidates = [name, f"{name}.exe", f"{name}.bat", f"{name}.cmd"]
+
+    for item in candidates:
+        path = shutil.which(item)
+        if path:
+            return path
+
+    raise SystemExit(f"Command not found in PATH: {name}")
+
+
 def run(cmd: list[str]) -> None:
-    print(f"Running: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    resolved = list(cmd)
+    resolved[0] = _resolve_executable(resolved[0])
+
+    # .bat/.cmd may require cmd.exe invocation for consistent behavior.
+    if platform.system() == "Windows" and Path(resolved[0]).suffix.lower() in {".bat", ".cmd"}:
+        resolved = ["cmd", "/c", *resolved]
+
+    print(f"Running: {' '.join(resolved)}")
+    subprocess.run(resolved, check=True)
 
 
 def detect_arch(raw_arch: str) -> str:
@@ -73,22 +94,21 @@ def resolve_build_dir(candidates: list[Path]) -> Path:
     raise SystemExit(f"Build output not found. Checked candidates:\n{checked}")
 
 
-def package_windows(build_dir: Path, artifact_path: Path) -> None:
+def package_windows(build_dir: Path, output_dir: Path, arch: str) -> Path:
+    exe_candidates = sorted(build_dir.glob("*.exe"))
+    if not exe_candidates:
+        raise SystemExit(f"No executable found in build output: {build_dir.as_posix()}")
+
+    artifact_path = output_dir / f"windows_{arch}.zip"
     if artifact_path.exists():
         artifact_path.unlink()
 
-    with tempfile.TemporaryDirectory() as tmp:
-        dist = Path(tmp) / "dist"
-        dist.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(artifact_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for item in sorted(build_dir.rglob("*")):
+            if item.is_file():
+                zf.write(item, arcname=item.relative_to(build_dir))
 
-        for child in build_dir.iterdir():
-            target = dist / child.name
-            if child.is_dir():
-                shutil.copytree(child, target, dirs_exist_ok=True)
-            else:
-                shutil.copy2(child, target)
-
-        shutil.make_archive(str(artifact_path.with_suffix("")), "zip", root_dir=dist)
+    return artifact_path
 
 
 def package_targz(build_dir: Path, artifact_path: Path) -> None:
@@ -165,14 +185,15 @@ def main() -> int:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    artifact_path = output_dir / artifact
 
     if target == "windows":
-        package_windows(build_dir, artifact_path)
+        artifact_path = package_windows(build_dir, output_dir, arch)
+        print(f"Packaged: {artifact_path.as_posix()}")
     else:
+        artifact_path = output_dir / artifact
         package_targz(build_dir, artifact_path)
+        print(f"Packaged: {artifact_path.as_posix()}")
 
-    print(f"Packaged: {artifact_path.as_posix()}")
     print(f"Target: {target}")
     print(f"Arch: {arch}")
     return 0

@@ -113,7 +113,7 @@ Tag-based release pipeline is defined in `.github/workflows/release.yml`:
 
 - Trigger: push tag matching `v*`
 - Matrix build across Linux/macOS/Windows and amd64/arm64 variants
-- Packages artifacts (`.tar.gz` for Linux/macOS, `.zip` for Windows)
+- Packages artifacts (`.tar.gz` for Linux/macOS, direct `.exe` for Windows)
 - Uploads assets to GitHub Release for the tag
 
 ## Local Packaging
@@ -140,7 +140,7 @@ Output artifacts are written to `release/` by default and follow CI naming:
 
 - Linux: `linux_<arch>.tar.gz`
 - macOS: `darwin_<arch>.tar.gz`
-- Windows: `windows_<arch>.zip`
+- Windows: `windows_<arch>.exe`
 
 Note: local packaging is host-native (Windows builds Windows, macOS builds macOS, Linux builds Linux).
 
