@@ -87,6 +87,7 @@ jobs:
             ninja-build \
             pkg-config \
             libgtk-3-dev \
+            libsecret-1-dev \
             liblzma-dev
 
           if apt-cache show libayatana-appindicator3-dev >/dev/null 2>&1; then
@@ -98,22 +99,56 @@ jobs:
             exit 1
           fi
 
+          pkg-config --exists libsecret-1
           pkg-config --exists ayatana-appindicator3-0.1 || pkg-config --exists appindicator3-0.1
+          pkg-config --modversion libsecret-1
+          pkg-config --modversion gtk+-3.0
+
+      - name: Resolve app version from tag
+        id: app_version
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+
+            const tag = process.env.GITHUB_REF_NAME || '';
+            if (!tag.startsWith('v')) {
+              core.setFailed(`Tag must start with v, got: ${tag}`);
+              return;
+            }
+
+            const versionText = tag.slice(1);
+            const [buildName, explicitBuildNumber] = versionText.split('+');
+
+            if (!/^\d+\.\d+\.\d+$/.test(buildName)) {
+              core.setFailed(`Tag version must be in vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH+BUILD format, got: ${tag}`);
+              return;
+            }
+
+            const buildNumber = explicitBuildNumber || process.env.GITHUB_RUN_NUMBER;
+            if (!/^\d+$/.test(buildNumber)) {
+              core.setFailed(`Build number must be numeric, got: ${buildNumber}`);
+              return;
+            }
+
+            core.setOutput('build_name', buildName);
+            core.setOutput('build_number', buildNumber);
+            core.info(`Resolved Flutter build version: ${buildName}+${buildNumber}`);
 
       - name: Flutter pub get
         run: flutter pub get
 
       - name: Build Linux
         if: matrix.target == 'linux'
-        run: flutter build linux --release
+        run: flutter build linux --release --build-name="${{ steps.app_version.outputs.build_name }}" --build-number="${{ steps.app_version.outputs.build_number }}"
 
       - name: Build macOS
         if: matrix.target == 'darwin'
-        run: flutter build macos --release
+        run: flutter build macos --release --build-name="${{ steps.app_version.outputs.build_name }}" --build-number="${{ steps.app_version.outputs.build_number }}"
 
       - name: Build Windows
         if: matrix.target == 'windows'
-        run: flutter build windows --release
+        run: flutter build windows --release --build-name="${{ steps.app_version.outputs.build_name }}" --build-number="${{ steps.app_version.outputs.build_number }}"
 
       - name: Verify build output (linux/macos)
         if: matrix.format == 'tar.gz'
@@ -184,9 +219,39 @@ jobs:
           find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} release/ \;
           ls -lah release
 
+      - name: Resolve release version from tag
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(\+([0-9]+))?$ ]]; then
+            echo "Invalid tag format: $tag"
+            echo "Expected: vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH+BUILD"
+            exit 1
+          fi
+
+          build_name="${BASH_REMATCH[1]}"
+          build_number="${BASH_REMATCH[3]}"
+          if [ -z "$build_number" ]; then
+            build_number="${GITHUB_RUN_NUMBER}"
+          fi
+
+          app_version="${build_name}+${build_number}"
+          echo "APP_VERSION=${app_version}" >> "$GITHUB_ENV"
+          echo "Resolved app version: ${app_version}"
+
       - name: Upload to GitHub release/tag assets
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "Automated release for ${GITHUB_REF_NAME}" || true
+          notes="Automated release for ${GITHUB_REF_NAME}
+
+App version: ${APP_VERSION}"
+
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "$notes"
+          else
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "$notes"
+          fi
+
           gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" release/* --clobber
