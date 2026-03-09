@@ -116,6 +116,34 @@ Tag-based release pipeline is defined in `.github/workflows/release.yml`:
 - Packages artifacts (`.tar.gz` for Linux/macOS, `.zip` for Windows)
 - Uploads assets to GitHub Release for the tag
 
+## Local Packaging
+
+Use the Python script to package on the current host OS:
+
+```bash
+python3 tool/package_local.py
+```
+
+Optional arguments:
+
+- build version: `--build-name`, `--build-number`
+- package only: `--skip-build`
+- output folder: `--output-dir`
+
+macOS local signing:
+
+- sign app bundle: `--macos-sign-identity "Developer ID Application: ..."`
+- ad-hoc signing: `--macos-sign-identity "-"`
+- optional entitlements: `--macos-entitlements path/to/entitlements.plist`
+
+Output artifacts are written to `release/` by default and follow CI naming:
+
+- Linux: `linux_<arch>.tar.gz`
+- macOS: `darwin_<arch>.tar.gz`
+- Windows: `windows_<arch>.zip`
+
+Note: local packaging is host-native (Windows builds Windows, macOS builds macOS, Linux builds Linux).
+
 ## Security Notes
 
 - Keep your GitHub token and WebDAV credentials private.

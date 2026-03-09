@@ -21,6 +21,15 @@ class SettingsController extends ChangeNotifier {
   SettingsController();
 
   static const String _usageJsonFileName = 'usage.json';
+  static const int webdavAutoBackupOnStartupOnly = -1;
+  static const List<int> webdavAutoBackupIntervals = <int>[
+    5,
+    30,
+    60,
+    360,
+    1440,
+    webdavAutoBackupOnStartupOnly,
+  ];
 
   AppSettings settings = AppSettings.defaults();
   bool launchAtStartupEnabled = false;
@@ -31,6 +40,8 @@ class SettingsController extends ChangeNotifier {
   WebdavStatusLevel webdavStatusLevel = WebdavStatusLevel.idle;
   String webdavStatusText = '尚未测试 WebDAV 连接';
   bool _webdavBackupInProgress = false;
+  bool _startupWebdavCheckTriggered = false;
+  bool _startupAutoBackupTriggered = false;
 
   ThemeMode get themeMode {
     switch (settings.themeMode) {
@@ -44,7 +55,12 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<void> load() async {
-    settings = await AppServices.settings.load();
+    final loadedSettings = await AppServices.settings.load();
+    settings = _withNormalizedWebdavAutoBackupInterval(loadedSettings);
+    if (settings.webdavAutoBackupIntervalMinutes !=
+        loadedSettings.webdavAutoBackupIntervalMinutes) {
+      await AppServices.settings.save(settings);
+    }
     await refreshRecentVersions();
     _restartWebdavAutoBackupTimer();
 
@@ -75,17 +91,8 @@ class SettingsController extends ChangeNotifier {
       lastStatus = '';
     }
 
-    if (settings.webdavUrl.trim().isEmpty) {
-      _setWebdavStatus(WebdavStatusLevel.idle, '尚未测试 WebDAV 连接');
-    } else {
-      unawaited(
-        testWebdavConnection(
-          url: settings.webdavUrl,
-          username: settings.webdavUsername,
-          password: settings.webdavPassword,
-        ),
-      );
-    }
+    _triggerStartupWebdavCheck();
+    _triggerStartupAutoBackupIfNeeded();
   }
 
   Future<String> setLaunchAtStartup(bool value) async {
@@ -159,12 +166,87 @@ class SettingsController extends ChangeNotifier {
     await AppServices.settings.save(settings);
     _restartWebdavAutoBackupTimer();
     notifyListeners();
-    return enabled ? '已开启 WebDAV 自动备份（每小时）' : '已关闭 WebDAV 自动备份';
+    if (!enabled) {
+      return '已关闭 WebDAV 自动备份';
+    }
+    if (settings.webdavAutoBackupIntervalMinutes == webdavAutoBackupOnStartupOnly) {
+      return '已开启 WebDAV 自动备份（每次启动）';
+    }
+    return '已开启 WebDAV 自动备份（每 ${settings.webdavAutoBackupIntervalMinutes} 分钟）';
+  }
+
+  Future<String> saveWebdavAutoBackupIntervalMinutes(int minutes) async {
+    final normalized = _normalizeWebdavAutoBackupInterval(minutes);
+    settings = settings.copyWith(webdavAutoBackupIntervalMinutes: normalized);
+    await AppServices.settings.save(settings);
+    _restartWebdavAutoBackupTimer();
+    notifyListeners();
+    if (normalized == webdavAutoBackupOnStartupOnly) {
+      return '自动备份间隔已设置为每次启动';
+    }
+    return '自动备份间隔已设置为每 $normalized 分钟';
   }
 
   Future<void> reloadWebdavSettings() async {
-    settings = await AppServices.settings.load();
+    final loadedSettings = await AppServices.settings.load();
+    settings = _withNormalizedWebdavAutoBackupInterval(loadedSettings);
+    if (settings.webdavAutoBackupIntervalMinutes !=
+        loadedSettings.webdavAutoBackupIntervalMinutes) {
+      await AppServices.settings.save(settings);
+    }
     notifyListeners();
+  }
+
+  int _normalizeWebdavAutoBackupInterval(int minutes) {
+    if (webdavAutoBackupIntervals.contains(minutes)) {
+      return minutes;
+    }
+    return 60;
+  }
+
+  AppSettings _withNormalizedWebdavAutoBackupInterval(AppSettings value) {
+    final normalized =
+        _normalizeWebdavAutoBackupInterval(value.webdavAutoBackupIntervalMinutes);
+    if (normalized == value.webdavAutoBackupIntervalMinutes) {
+      return value;
+    }
+    return value.copyWith(webdavAutoBackupIntervalMinutes: normalized);
+  }
+
+  bool _hasCompleteWebdavConfig() {
+    return settings.webdavUrl.trim().isNotEmpty &&
+        settings.webdavUsername.trim().isNotEmpty &&
+        settings.webdavPassword.trim().isNotEmpty;
+  }
+
+  void _triggerStartupWebdavCheck() {
+    if (_startupWebdavCheckTriggered) {
+      return;
+    }
+    _startupWebdavCheckTriggered = true;
+    if (!_hasCompleteWebdavConfig()) {
+      _setWebdavStatus(WebdavStatusLevel.idle, 'WebDAV 配置未完整，已跳过自动测试');
+      return;
+    }
+    unawaited(
+      testWebdavConnection(
+        url: settings.webdavUrl,
+        username: settings.webdavUsername,
+        password: settings.webdavPassword,
+      ),
+    );
+  }
+
+  void _triggerStartupAutoBackupIfNeeded() {
+    if (_startupAutoBackupTriggered || !settings.webdavAutoBackupEnabled) {
+      return;
+    }
+    if (settings.webdavAutoBackupIntervalMinutes !=
+        webdavAutoBackupOnStartupOnly) {
+      return;
+    }
+    _startupAutoBackupTriggered = true;
+    unawaited(_performWebdavBackup(isAuto: true));
   }
 
   Future<String> testWebdavConnection({
@@ -187,9 +269,9 @@ class SettingsController extends ChangeNotifier {
     _setWebdavStatus(WebdavStatusLevel.running, '正在测试连接...');
     try {
       await AppServices.log.info('WebDAV test start: url=$normalizedUrl user=${username.trim()}');
-      final client = newClient(
-        normalizedUrl,
-        user: username.trim(),
+      final client = _createWebdavClient(
+        url: normalizedUrl,
+        username: username.trim(),
         password: password,
         debug: true,
       );
@@ -240,9 +322,9 @@ class SettingsController extends ChangeNotifier {
       await AppServices.log.info(
         'WebDAV backup start: url=${settings.webdavUrl} local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length} usage=$usageJsonPath isAuto=$isAuto',
       );
-      final client = newClient(
-        settings.webdavUrl,
-        user: settings.webdavUsername,
+      final client = _createWebdavClient(
+        url: settings.webdavUrl,
+        username: settings.webdavUsername,
         password: settings.webdavPassword,
         debug: false,
       );
@@ -298,9 +380,9 @@ class SettingsController extends ChangeNotifier {
       await AppServices.log.info(
         'WebDAV restore start: url=${settings.webdavUrl} local=${cfg.path} restoreTo=${authRoot.path} usage=$usageJsonPath',
       );
-      final client = newClient(
-        settings.webdavUrl,
-        user: settings.webdavUsername,
+      final client = _createWebdavClient(
+        url: settings.webdavUrl,
+        username: settings.webdavUsername,
         password: settings.webdavPassword,
         debug: false,
       );
@@ -390,9 +472,9 @@ class SettingsController extends ChangeNotifier {
       throw Exception('父级 WebDAV 地址未变化，无法执行回退写入');
     }
     await AppServices.log.info('WebDAV backup fallback to parent url: $parentUrl');
-    final parentClient = newClient(
-      parentUrl,
-      user: settings.webdavUsername,
+    final parentClient = _createWebdavClient(
+      url: parentUrl,
+      username: settings.webdavUsername,
       password: settings.webdavPassword,
       debug: false,
     );
@@ -415,9 +497,9 @@ class SettingsController extends ChangeNotifier {
       throw Exception('父级 WebDAV 地址未变化，无法执行回退写入 usage.json');
     }
     await AppServices.log.info('WebDAV backup usage-json fallback to parent url: $parentUrl');
-    final parentClient = newClient(
-      parentUrl,
-      user: settings.webdavUsername,
+    final parentClient = _createWebdavClient(
+      url: parentUrl,
+      username: settings.webdavUsername,
       password: settings.webdavPassword,
       debug: false,
     );
@@ -506,9 +588,9 @@ class SettingsController extends ChangeNotifier {
       throw Exception('父级 WebDAV 地址未变化，无法执行回退写入 auth-json');
     }
     await AppServices.log.info('WebDAV backup auth-json fallback to parent url: $parentUrl');
-    final parentClient = newClient(
-      parentUrl,
-      user: settings.webdavUsername,
+    final parentClient = _createWebdavClient(
+      url: parentUrl,
+      username: settings.webdavUsername,
       password: settings.webdavPassword,
       debug: false,
     );
@@ -619,9 +701,9 @@ class SettingsController extends ChangeNotifier {
       throw Exception('父级 WebDAV 地址未变化，无法执行回退读取 auth-json');
     }
     await AppServices.log.info('WebDAV restore auth-json fallback to parent url: $parentUrl');
-    final parentClient = newClient(
-      parentUrl,
-      user: settings.webdavUsername,
+    final parentClient = _createWebdavClient(
+      url: parentUrl,
+      username: settings.webdavUsername,
       password: settings.webdavPassword,
       debug: false,
     );
@@ -684,9 +766,9 @@ class SettingsController extends ChangeNotifier {
       throw Exception('父级 WebDAV 地址未变化，无法执行回退读取');
     }
     await AppServices.log.info('WebDAV restore fallback to parent url: $parentUrl');
-    final parentClient = newClient(
-      parentUrl,
-      user: settings.webdavUsername,
+    final parentClient = _createWebdavClient(
+      url: parentUrl,
+      username: settings.webdavUsername,
       password: settings.webdavPassword,
       debug: false,
     );
@@ -709,9 +791,9 @@ class SettingsController extends ChangeNotifier {
       throw Exception('父级 WebDAV 地址未变化，无法执行回退读取 usage.json');
     }
     await AppServices.log.info('WebDAV restore usage-json fallback to parent url: $parentUrl');
-    final parentClient = newClient(
-      parentUrl,
-      user: settings.webdavUsername,
+    final parentClient = _createWebdavClient(
+      url: parentUrl,
+      username: settings.webdavUsername,
       password: settings.webdavPassword,
       debug: false,
     );
@@ -899,6 +981,22 @@ class SettingsController extends ChangeNotifier {
     final parentSegments = segments.sublist(0, segments.length - 1);
     final parentPath = parentSegments.isEmpty ? '/' : '/${parentSegments.join('/')}';
     return uri.replace(path: parentPath).toString();
+  }
+
+  dynamic _createWebdavClient({
+    required String url,
+    required String username,
+    required String password,
+    required bool debug,
+  }) {
+    final client = newClient(
+      url,
+      user: username,
+      password: password,
+      debug: debug,
+    );
+    client.setHeaders(<String, dynamic>{'content-type': 'application/octet-stream'});
+    return client;
   }
 
   String _formatDioError(Object error) {
@@ -1093,10 +1191,13 @@ class SettingsController extends ChangeNotifier {
     if (!settings.webdavAutoBackupEnabled) {
       return;
     }
-    final minutes = settings.webdavAutoBackupIntervalMinutes <= 0
-        ? 60
-        : settings.webdavAutoBackupIntervalMinutes;
-    _webdavAutoBackupTimer = Timer.periodic(Duration(minutes: minutes), (_) {
+    final normalizedInterval =
+        _normalizeWebdavAutoBackupInterval(settings.webdavAutoBackupIntervalMinutes);
+    if (normalizedInterval == webdavAutoBackupOnStartupOnly) {
+      return;
+    }
+    _webdavAutoBackupTimer =
+        Timer.periodic(Duration(minutes: normalizedInterval), (_) {
       unawaited(_performWebdavBackup(isAuto: true));
     });
   }

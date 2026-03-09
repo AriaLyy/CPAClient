@@ -25,6 +25,13 @@
   - 随系统（System）
 - 主题模式会持久化到本地配置（`themeMode` 字段）。
 
-### 5) 质量验证
+### 5) 本地打包增强
+- 新增统一的 Python3 本地打包脚本：
+  - `tool/package_local.py`（跨平台）
+- macOS 本地打包支持可选签名能力：
+  - `--macos-sign-identity`（支持证书签名与 ad-hoc 签名）
+  - `--macos-entitlements`（可选 entitlements 文件）
+
+### 6) 质量验证
 - `flutter analyze`：通过
 - `flutter test`：通过

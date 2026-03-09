@@ -9,7 +9,6 @@ import 'package:window_manager/window_manager.dart';
 
 enum _SettingsSection { core, security, preferences, webdav, about }
 
-enum _CoreShortcutAction { configFile, configDirectory, sandboxDirectory }
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, required this.onThemeModeChanged});
@@ -263,17 +262,6 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _handleCoreShortcutAction(_CoreShortcutAction action) async {
-    switch (action) {
-      case _CoreShortcutAction.configFile:
-        await _run(_controller.openConfigFile);
-      case _CoreShortcutAction.configDirectory:
-        await _run(_controller.openConfigDirectory);
-      case _CoreShortcutAction.sandboxDirectory:
-        await _run(_controller.openSandboxDirectory);
-    }
-  }
-
   String? _webdavUrlErrorText(String value) {
     final input = value.trim();
     if (input.isEmpty) {
@@ -334,15 +322,15 @@ class _SettingsPageState extends State<SettingsPage> {
       filled: true,
       fillColor: scheme.surfaceContainerLowest,
       border: const OutlineInputBorder(
-        borderRadius: BorderRadius.all(Radius.circular(12)),
+        borderRadius: BorderRadius.all(Radius.circular(10)),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: const BorderRadius.all(Radius.circular(12)),
+        borderRadius: const BorderRadius.all(Radius.circular(10)),
         borderSide:
             BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: const BorderRadius.all(Radius.circular(12)),
+        borderRadius: const BorderRadius.all(Radius.circular(10)),
         borderSide: BorderSide(color: scheme.primary, width: 1.4),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -362,15 +350,6 @@ class _SettingsPageState extends State<SettingsPage> {
       WebdavStatusLevel.failure => scheme.error,
       WebdavStatusLevel.running => scheme.primary,
       WebdavStatusLevel.idle => scheme.onSurfaceVariant,
-    };
-  }
-
-  String _webdavStatusLabel() {
-    return switch (_controller.webdavStatusLevel) {
-      WebdavStatusLevel.success => '连接成功',
-      WebdavStatusLevel.failure => '连接失败',
-      WebdavStatusLevel.running => '处理中',
-      WebdavStatusLevel.idle => '未测试',
     };
   }
 
@@ -531,43 +510,6 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _menuTrigger({required String label}) {
-    final scheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 140),
-      constraints: const BoxConstraints(minHeight: _controlMinHeight),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: scheme.outline.withValues(alpha: 0.7)),
-        color: scheme.surfaceContainerHigh,
-        boxShadow: [
-          BoxShadow(
-            color: scheme.shadow.withValues(alpha: 0.08),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.more_horiz_rounded,
-              size: _uiIconSize, color: scheme.onSurface),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: textTheme.labelMedium?.copyWith(
-              color: scheme.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _sectionCard({
     required IconData icon,
     required String title,
@@ -710,18 +652,38 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             const SizedBox(height: 10),
-            _metricRow(label: '核心版本', value: _controller.settings.coreVersion),
+            Row(
+              children: [
+                Text(
+                  '核心版本',
+                  style: textTheme.bodySmall
+                      ?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: _coreStatusDotColor(context),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  _controller.settings.coreVersion,
+                  style: textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _metricRow(label: '当前端口', value: '${_controller.currentPort}'),
             const SizedBox(height: 10),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                _statusPill(
-                  label: compact
-                      ? (_controller.isCoreRunning ? 'Core 运行中' : 'Core 已停止')
-                      : (_controller.isCoreRunning ? 'Core 运行' : 'Core 停止'),
-                  color: _coreStatusDotColor(context),
-                ),
                 InkWell(
                   borderRadius: BorderRadius.circular(999),
                   onTap: () => unawaited(_run(_controller.openWebUi)),
@@ -953,48 +915,22 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                  color: scheme.outlineVariant.withValues(alpha: 0.5)),
+          if (statusMessage.isNotEmpty) ...[
+            Text(
+              '状态消息',
+              style: textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-            child: Column(
-              children: [
-                _metricRow(
-                  label: '运行状态',
-                  value: _controller.isCoreRunning ? '运行中' : '已停止',
-                ),
-                const SizedBox(height: 8),
-                _metricRow(label: '当前端口', value: '${_controller.currentPort}'),
-                const SizedBox(height: 8),
-                _metricRow(label: '当前版本', value: selectedVersion),
-                if (statusMessage.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '状态消息',
-                      style: textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    statusMessage,
-                    style: textTheme.bodySmall
-                        ?.copyWith(color: scheme.onSurfaceVariant),
-                  ),
-                ],
-              ],
+            const SizedBox(height: 4),
+            Text(
+              statusMessage,
+              style: textTheme.bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
             ),
-          ),
-          const SizedBox(height: _itemGap),
+            const SizedBox(height: _itemGap),
+          ],
           DropdownButtonFormField<String>(
             value: selectedVersion,
             decoration: _inputDecoration(
@@ -1062,12 +998,6 @@ class _SettingsPageState extends State<SettingsPage> {
                     : Icon(Icons.stop_circle_outlined, size: _uiIconSize),
                 label: const Text('停止核心'),
               ),
-              FilledButton.tonalIcon(
-                style: _tonalControlStyle(),
-                onPressed: () => _run(_controller.openWebUi),
-                icon: Icon(Icons.open_in_browser, size: _uiIconSize),
-                label: const Text('打开 WebUI'),
-              ),
             ],
           ),
           const SizedBox(height: _itemGap),
@@ -1079,40 +1009,40 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: 8),
-          PopupMenuButton<_CoreShortcutAction>(
-            tooltip: '打开相关文件',
-            onSelected: (action) =>
-                unawaited(_handleCoreShortcutAction(action)),
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: _CoreShortcutAction.configFile,
-                child: ListTile(
-                  leading: Icon(Icons.description_outlined, size: _uiIconSize),
-                  title: const Text('打开 config.yaml'),
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, _controlMinHeight),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: () => _run(_controller.openConfigFile),
+                  icon: Icon(Icons.description_outlined, size: _uiIconSize),
+                  label: const Text('打开 config.yaml'),
                 ),
               ),
-              PopupMenuItem(
-                value: _CoreShortcutAction.configDirectory,
-                child: ListTile(
-                  leading: Icon(Icons.folder_open, size: _uiIconSize),
-                  title: const Text('打开配置目录'),
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                ),
-              ),
-              PopupMenuItem(
-                value: _CoreShortcutAction.sandboxDirectory,
-                child: ListTile(
-                  leading: Icon(Icons.source_outlined, size: _uiIconSize),
-                  title: const Text('打开 sandbox 目录'),
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, _controlMinHeight),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: () => _run(_controller.openConfigDirectory),
+                  icon: Icon(Icons.folder_open, size: _uiIconSize),
+                  label: const Text('打开配置目录'),
                 ),
               ),
             ],
-            child: _menuTrigger(label: '打开相关文件'),
           ),
         ],
       ),
@@ -1132,7 +1062,7 @@ class _SettingsPageState extends State<SettingsPage> {
           _sectionGroup(
             icon: Icons.key_rounded,
             title: 'GitHub Token',
-            description: '用于拉取 GitHub Release。可选择本地加密保存或仅临时使用。',
+            description: '用于拉取 GitHub Release。支持本地加密保存或仅临时使用。',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1327,6 +1257,10 @@ class _SettingsPageState extends State<SettingsPage> {
     final textTheme = Theme.of(context).textTheme;
     final intervalMinutes =
         _controller.settings.webdavAutoBackupIntervalMinutes;
+    final intervalLabel =
+        intervalMinutes == SettingsController.webdavAutoBackupOnStartupOnly
+            ? '每次启动'
+            : '每 $intervalMinutes 分钟';
     return _sectionCard(
       icon: Icons.cloud_sync_rounded,
       title: 'WebDAV 同步',
@@ -1335,31 +1269,6 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                  color: scheme.outlineVariant.withValues(alpha: 0.5)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _statusPill(
-                  label: '状态: ${_webdavStatusLabel()}',
-                  color: _webdavStatusDotColor(context),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _controller.webdavStatusText,
-                  style: textTheme.bodySmall
-                      ?.copyWith(color: scheme.onSurfaceVariant),
-                ),
-              ],
-            ),
-          ),
           const SizedBox(height: _itemGap),
           TextField(
             controller: _webdavUrlCtl,
@@ -1409,11 +1318,41 @@ class _SettingsPageState extends State<SettingsPage> {
             dense: true,
             contentPadding: EdgeInsets.zero,
             value: _controller.settings.webdavAutoBackupEnabled,
-            title: Text('自动备份（每 $intervalMinutes 分钟）'),
-            subtitle: const Text('自动备份 config.yaml、auth-json 与 usage.json'),
+            title: Text('自动备份（$intervalLabel）'),
             onChanged: (value) =>
                 _run(() => _controller.saveWebdavAutoBackupEnabled(value)),
           ),
+          if (_controller.settings.webdavAutoBackupEnabled) ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              value: SettingsController.webdavAutoBackupIntervals.contains(
+                      intervalMinutes)
+                  ? intervalMinutes
+                  : 60,
+              decoration: _inputDecoration(
+                label: '自动备份间隔',
+              ),
+              items: const [
+                DropdownMenuItem(value: 5, child: Text('5 分钟')),
+                DropdownMenuItem(value: 30, child: Text('30 分钟')),
+                DropdownMenuItem(value: 60, child: Text('1 小时')),
+                DropdownMenuItem(value: 360, child: Text('6 小时')),
+                DropdownMenuItem(value: 1440, child: Text('1 天')),
+                DropdownMenuItem(
+                  value: SettingsController.webdavAutoBackupOnStartupOnly,
+                  child: Text('每次启动'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                _run(
+                  () => _controller.saveWebdavAutoBackupIntervalMinutes(value),
+                );
+              },
+            ),
+          ],
           const SizedBox(height: _itemGap),
           Text(
             '连接与同步操作',
@@ -1525,43 +1464,18 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  'https://github.com/AriaLyy/CPAClient',
-                  style: textTheme.bodyMedium,
+                GestureDetector(
+                  onTap: () => _run(_controller.openAbout),
+                  child: Text(
+                    'https://github.com/AriaLyy/CPAClient',
+                    style: textTheme.bodyMedium?.copyWith(
+                      color: scheme.primary,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: _itemGap),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(0, _controlMinHeight),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                onPressed: () => _run(_controller.openAbout),
-                icon: Icon(Icons.open_in_new, size: _uiIconSize),
-                label: const Text('打开项目主页'),
-              ),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(0, _controlMinHeight),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                onPressed: () => _run(_controller.openSandboxDirectory),
-                icon: Icon(Icons.folder_special_outlined, size: _uiIconSize),
-                label: const Text('打开 sandbox 目录'),
-              ),
-            ],
           ),
         ],
       ),
