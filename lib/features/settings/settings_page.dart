@@ -1648,9 +1648,6 @@ class _SettingsPageState extends State<SettingsPage> {
         : versions.first;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('CPAClient 设置'),
-      ),
       body: _buildDesktopLayout(
         versions: versions,
         selectedVersion: selectedVersion,

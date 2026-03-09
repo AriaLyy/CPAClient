@@ -7,7 +7,6 @@ import 'package:cpaclient/core/services/core_process_manager.dart';
 import 'package:cpaclient/core/services/github_release_service.dart';
 import 'package:cpaclient/core/services/sandbox_config_service.dart';
 import 'package:cpaclient/core/services/sandbox_path_service.dart';
-import 'package:cpaclient/core/services/secure_key_store_service.dart';
 import 'package:cpaclient/core/services/settings_crypto_service.dart';
 import 'package:cpaclient/core/services/startup_service.dart';
 
@@ -16,11 +15,9 @@ class AppServices {
 
   static final SandboxPathService paths = SandboxPathService();
   static final AppLogService log = AppLogService(paths);
-  static final SecureKeyStoreService secureKeyStore = SecureKeyStoreService();
   static final SettingsCryptoService settingsCrypto = SettingsCryptoService();
   static final AppSettingsService settings = AppSettingsService(
     paths,
-    keyStore: secureKeyStore,
     crypto: settingsCrypto,
   );
   static final SandboxConfigService sandboxConfig = SandboxConfigService(paths);

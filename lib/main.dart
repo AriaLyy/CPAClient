@@ -7,13 +7,16 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
 
+  const fixedWindowSize = Size(860, 640);
   const options = WindowOptions(
-    size: Size(1100, 860),
-    minimumSize: Size(980, 760),
+    size: fixedWindowSize,
+    minimumSize: fixedWindowSize,
+    maximumSize: fixedWindowSize,
     center: true,
     title: 'CPAClient',
   );
   await windowManager.waitUntilReadyToShow(options, () async {
+    await windowManager.setResizable(false);
     await windowManager.show();
     await windowManager.focus();
   });

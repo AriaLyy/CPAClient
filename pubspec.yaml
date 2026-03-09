@@ -43,12 +43,12 @@ dependencies:
   webdav_client: ^1.2.2
   http: ^1.5.0
   cryptography: ^2.7.0
-  flutter_secure_storage: ^9.2.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -59,6 +59,19 @@ flutter:
   assets:
     - configs/config.yaml
     - macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png
+
+flutter_launcher_icons:
+  android: false
+  ios: false
+  image_path: macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png
+  web:
+    generate: false
+  windows:
+    generate: true
+  macos:
+    generate: true
+  linux:
+    generate: true
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

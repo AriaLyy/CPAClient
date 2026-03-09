@@ -8,16 +8,13 @@ import 'package:cpaclient/core/services/settings_crypto_service.dart';
 class AppSettingsService {
   AppSettingsService(
     this._paths, {
-    SettingsKeyStore? keyStore,
     SettingsCryptoService? crypto,
-  })  : _keyStore = keyStore ?? SecureKeyStoreService(),
-        _crypto = crypto ?? SettingsCryptoService();
+  }) : _crypto = crypto ?? SettingsCryptoService();
 
-  static const int _schemaVersion = 2;
+  static const int _schemaVersion = 3;
   static const String _keyId = 'app_settings_key_v1';
 
   final SandboxPathService _paths;
-  final SettingsKeyStore _keyStore;
   final SettingsCryptoService _crypto;
 
   Future<AppSettings> load() async {
@@ -48,7 +45,6 @@ class AppSettingsService {
       file.parent.createSync(recursive: true);
     }
 
-    final key = await _keyStore.readOrCreateKey(_keyId);
     final encrypted = await _crypto.encryptJson(
       data: {
         'githubToken': settings.githubToken,
@@ -57,7 +53,6 @@ class AppSettingsService {
         'webdavPassword': settings.webdavPassword,
         'webuiSecretKey': settings.webuiSecretKey,
       },
-      key: key,
     );
 
     final payload = <String, dynamic>{
@@ -66,11 +61,9 @@ class AppSettingsService {
       'themeMode': settings.themeMode,
       'keepGithubToken': settings.keepGithubToken,
       'webdavAutoBackupEnabled': settings.webdavAutoBackupEnabled,
-      'webdavAutoBackupIntervalMinutes': settings.webdavAutoBackupIntervalMinutes,
-      'secrets': {
-        ...encrypted,
-        'keyRef': _keyId,
-      },
+      'webdavAutoBackupIntervalMinutes':
+          settings.webdavAutoBackupIntervalMinutes,
+      'secrets': encrypted,
     };
 
     await file.writeAsString(jsonEncode(payload));
@@ -88,9 +81,7 @@ class AppSettingsService {
     }
 
     try {
-      final keyRef = (secrets['keyRef'] as String?) ?? _keyId;
-      final key = await _keyStore.readOrCreateKey(keyRef);
-      final decrypted = await _crypto.decryptJson(envelope: secrets, key: key);
+      final decrypted = await _crypto.decryptJson(envelope: secrets);
       return AppSettings(
         coreVersion: coreVersion,
         themeMode: themeMode,
@@ -100,9 +91,35 @@ class AppSettingsService {
         webdavPassword: (decrypted['webdavPassword'] as String?) ?? '',
         webuiSecretKey: (decrypted['webuiSecretKey'] as String?) ?? '',
         keepGithubToken: (map['keepGithubToken'] as bool?) ?? true,
-        webdavAutoBackupEnabled: (map['webdavAutoBackupEnabled'] as bool?) ?? false,
-        webdavAutoBackupIntervalMinutes: (map['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
+        webdavAutoBackupEnabled:
+            (map['webdavAutoBackupEnabled'] as bool?) ?? false,
+        webdavAutoBackupIntervalMinutes:
+            (map['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
       );
+    } catch (_) {}
+
+    try {
+      final keyRef = (secrets['keyRef'] as String?) ?? _keyId;
+      final key =
+          await SecureKeyStoreService(paths: _paths).readOrCreateKey(keyRef);
+      final decrypted =
+          await _crypto.decryptLegacyAes(envelope: secrets, key: key);
+      final migrated = AppSettings(
+        coreVersion: coreVersion,
+        themeMode: themeMode,
+        githubToken: (decrypted['githubToken'] as String?) ?? '',
+        webdavUrl: (decrypted['webdavUrl'] as String?) ?? '',
+        webdavUsername: (decrypted['webdavUsername'] as String?) ?? '',
+        webdavPassword: (decrypted['webdavPassword'] as String?) ?? '',
+        webuiSecretKey: (decrypted['webuiSecretKey'] as String?) ?? '',
+        keepGithubToken: (map['keepGithubToken'] as bool?) ?? true,
+        webdavAutoBackupEnabled:
+            (map['webdavAutoBackupEnabled'] as bool?) ?? false,
+        webdavAutoBackupIntervalMinutes:
+            (map['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
+      );
+      await save(migrated);
+      return migrated;
     } catch (_) {
       return AppSettings.defaults()
           .copyWith(coreVersion: coreVersion, themeMode: themeMode);
@@ -110,7 +127,8 @@ class AppSettingsService {
   }
 
   bool _isEncryptedSchema(Map<String, dynamic> map) {
-    return map['schemaVersion'] == _schemaVersion &&
+    final version = map['schemaVersion'];
+    return (version == 2 || version == _schemaVersion) &&
         map['secrets'] is Map<String, dynamic>;
   }
 

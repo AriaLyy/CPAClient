@@ -55,6 +55,8 @@ class TrayService with TrayListener {
       candidates.add('windows/runner/resources/app_icon.ico');
     }
     if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
+      candidates.add('macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png');
+      candidates.add('macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png');
       candidates.add('macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png');
     }
 

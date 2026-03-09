@@ -10,6 +10,7 @@ import 'package:cpaclient/core/services/app_services.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show ThemeMode;
+import 'package:flutter/services.dart' show MissingPluginException;
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
@@ -64,6 +65,8 @@ class SettingsController extends ChangeNotifier {
       launchAtStartupEnabled = await launchAtStartup.isEnabled();
     } on UnsupportedError {
       launchAtStartupEnabled = false;
+    } on MissingPluginException {
+      launchAtStartupEnabled = false;
     }
     currentPort = await AppServices.sandboxConfig.readPort();
     webuiPassword = settings.webuiSecretKey;
@@ -97,6 +100,10 @@ class SettingsController extends ChangeNotifier {
       return launchAtStartupEnabled ? '已开启开机启动' : '已关闭开机启动';
     } on UnsupportedError {
       return '当前运行环境不支持开机启动（请使用打包后的桌面应用）';
+    } on MissingPluginException {
+      launchAtStartupEnabled = false;
+      notifyListeners();
+      return '当前运行环境缺少开机启动插件实现（请使用打包后的桌面应用）';
     } catch (e) {
       return '开机启动设置失败: $e';
     }
