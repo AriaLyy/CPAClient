@@ -244,9 +244,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          notes="Automated release for ${GITHUB_REF_NAME}
-
-App version: ${APP_VERSION}"
+          notes="$(printf 'Automated release for %s\n\nApp version: %s\n' "${GITHUB_REF_NAME}" "${APP_VERSION}")"
 
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "$notes"
