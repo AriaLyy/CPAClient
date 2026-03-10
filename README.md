@@ -40,11 +40,11 @@ It provides a settings-first experience for downloading/updating the core binary
 
 ### Light Mode
 
-![Light mode screenshot](docs/assets/日间截图.png)
+![Light mode screenshot](docs/assets/light-mode.png)
 
 ### Dark Mode
 
-![Dark mode screenshot](docs/assets/夜间截图.png)
+![Dark mode screenshot](docs/assets/dark-mode.png)
 
 ## Supported Platforms
 

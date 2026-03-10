@@ -61,11 +61,11 @@ CPAClient 是一个 Flutter 桌面客户端，用于在本地管理并运行 [CL
 
 ### 日间模式
 
-![日间模式截图](docs/assets/日间截图.png)
+![日间模式截图](docs/assets/light-mode.png)
 
 ### 夜间模式
 
-![夜间模式截图](docs/assets/夜间截图.png)
+![夜间模式截图](docs/assets/dark-mode.png)
 
 ## 支持平台
 
