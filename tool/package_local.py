@@ -26,7 +26,7 @@ def _resolve_executable(name: str) -> str:
     raise SystemExit(f"Command not found in PATH: {name}")
 
 
-def run(cmd: list[str]) -> None:
+def run(cmd: list[str], *, extra_env: dict[str, str] | None = None) -> None:
     resolved = list(cmd)
     resolved[0] = _resolve_executable(resolved[0])
 
@@ -34,8 +34,12 @@ def run(cmd: list[str]) -> None:
     if platform.system() == "Windows" and Path(resolved[0]).suffix.lower() in {".bat", ".cmd"}:
         resolved = ["cmd", "/c", *resolved]
 
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+
     print(f"Running: {' '.join(resolved)}")
-    subprocess.run(resolved, check=True)
+    subprocess.run(resolved, check=True, env=env)
 
 
 def detect_arch(raw_arch: str) -> str:
@@ -79,9 +83,12 @@ def resolve_platform(arch: str) -> tuple[str, str, list[Path], str]:
     if system == "Darwin":
         target = "darwin"
         flutter_target = "macos"
-        build_dir = Path("build/macos/Build/Products/Release/cpaclient.app")
+        candidates = [
+            Path("build/macos/Build/Products/Release/cpaclient.app"),
+            Path("build/macos/Build/Products/Release/Runner.app"),
+        ]
         artifact = f"darwin_{arch}.tar.gz"
-        return target, flutter_target, [build_dir], artifact
+        return target, flutter_target, candidates, artifact
 
     raise SystemExit(f"Unsupported host OS: {system}")
 
@@ -141,6 +148,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="release", help="Output directory")
     parser.add_argument("--macos-sign-identity", default="", help="codesign identity for macOS ('-' for ad-hoc)")
     parser.add_argument("--macos-entitlements", default="", help="Optional entitlements plist for macOS signing")
+    parser.add_argument(
+        "--allow-provisioning-updates",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow xcodebuild to create/update signing profiles on macOS (default: true)",
+    )
+    parser.add_argument(
+        "--no-sign",
+        action="store_true",
+        help="Disable macOS code signing and provisioning (local build only)",
+    )
     return parser.parse_args()
 
 
@@ -153,16 +171,62 @@ def main() -> int:
         raise SystemExit("--macos-sign-identity is only supported on macOS")
     if args.macos_entitlements and target != "darwin":
         raise SystemExit("--macos-entitlements is only supported on macOS")
+    if args.no_sign and target != "darwin":
+        raise SystemExit("--no-sign is only supported on macOS")
 
     if not args.skip_build:
-        cmd = ["flutter", "build", flutter_target, "--release"]
-        if args.build_name:
-            cmd.append(f"--build-name={args.build_name}")
-        if args.build_number:
-            cmd.append(f"--build-number={args.build_number}")
-        run(cmd)
+        if target == "darwin" and args.no_sign:
+            cmd = ["flutter", "build", flutter_target, "--release"]
+            if args.build_name:
+                cmd.append(f"--build-name={args.build_name}")
+            if args.build_number:
+                cmd.append(f"--build-number={args.build_number}")
+            run(
+                cmd,
+                extra_env={
+                    "CODE_SIGNING_ALLOWED": "NO",
+                    "CODE_SIGNING_REQUIRED": "NO",
+                    "CODE_SIGN_IDENTITY": "",
+                    "EXPANDED_CODE_SIGN_IDENTITY": "",
+                    "DEVELOPMENT_TEAM": "",
+                },
+            )
+        elif target == "darwin" and args.allow_provisioning_updates:
+            flutter_config_cmd = ["flutter", "build", flutter_target, "--release", "--config-only"]
+            if args.build_name:
+                flutter_config_cmd.append(f"--build-name={args.build_name}")
+            if args.build_number:
+                flutter_config_cmd.append(f"--build-number={args.build_number}")
+            run(flutter_config_cmd)
+
+            xcode_cmd = [
+                "xcodebuild",
+                "-workspace",
+                "macos/Runner.xcworkspace",
+                "-scheme",
+                "Runner",
+                "-configuration",
+                "Release",
+                "-derivedDataPath",
+                "build/macos",
+                "-destination",
+                "platform=macOS",
+                "-allowProvisioningUpdates",
+                "build",
+            ]
+            run(xcode_cmd)
+        else:
+            cmd = ["flutter", "build", flutter_target, "--release"]
+            if args.build_name:
+                cmd.append(f"--build-name={args.build_name}")
+            if args.build_number:
+                cmd.append(f"--build-number={args.build_number}")
+            run(cmd)
 
     build_dir = resolve_build_dir(candidates)
+
+    if target == "darwin" and args.no_sign:
+        run(["codesign", "--force", "--deep", "--sign", "-", str(build_dir)])
 
     if target == "darwin" and args.macos_sign_identity:
         if args.macos_entitlements and not Path(args.macos_entitlements).is_file():

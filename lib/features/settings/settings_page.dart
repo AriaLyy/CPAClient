@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cpaclient/core/models/webdav_backup_version.dart';
 import 'package:cpaclient/core/services/app_services.dart';
 import 'package:cpaclient/features/settings/settings_controller.dart';
 import 'package:cpaclient/features/tray/tray_service.dart';
@@ -30,6 +31,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _showGithubToken = false;
   bool _showWebuiPassword = false;
   bool _showWebdavPassword = false;
+  bool _hoveringWebUiButton = false;
   _SettingsSection? _hoveredSection;
   _SettingsSection? _focusedSection;
   _SettingsSection? _scrollTrackedSection;
@@ -135,7 +137,6 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     _syncText(_githubTokenCtl, _controller.settings.githubToken);
     _syncText(_webuiPasswordCtl, _controller.webuiPassword);
-    _reloadWebdavDraftFromSettings();
     setState(() {});
   }
 
@@ -462,12 +463,15 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _statusPill({
     required String label,
     required Color color,
+    Color? backgroundColor,
     IconData? icon,
   }) {
     final textTheme = Theme.of(context).textTheme;
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 120),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
+        color: backgroundColor,
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: color),
       ),
@@ -670,13 +674,31 @@ class _SettingsPageState extends State<SettingsPage> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () => unawaited(_run(_controller.openWebUi)),
-                  child: _statusPill(
-                    label: compact ? '打开 WebUI' : 'WebUI',
-                    color: scheme.primary,
-                    icon: Icons.open_in_browser,
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  onEnter: (_) {
+                    setState(() {
+                      _hoveringWebUiButton = true;
+                    });
+                  },
+                  onExit: (_) {
+                    setState(() {
+                      _hoveringWebUiButton = false;
+                    });
+                  },
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () => unawaited(_run(_controller.openWebUi)),
+                    child: _statusPill(
+                      label: compact ? '打开 WebUI' : 'WebUI',
+                      color: _hoveringWebUiButton
+                          ? scheme.primary.withValues(alpha: 0.9)
+                          : scheme.primary,
+                      backgroundColor: _hoveringWebUiButton
+                          ? scheme.primary.withValues(alpha: 0.1)
+                          : null,
+                      icon: Icons.open_in_browser,
+                    ),
                   ),
                 ),
               ],
@@ -1232,36 +1254,18 @@ class _SettingsPageState extends State<SettingsPage> {
           DropdownButtonFormField<ThemeMode>(
             value: _controller.themeMode,
             decoration: _inputDecoration(label: '主题模式'),
-            items: [
+            items: const [
               DropdownMenuItem(
                 value: ThemeMode.system,
-                child: Row(
-                  children: [
-                    Icon(Icons.settings_brightness, size: _uiIconSize),
-                    const SizedBox(width: 8),
-                    const Text('随系统'),
-                  ],
-                ),
+                child: Text('随系统'),
               ),
               DropdownMenuItem(
                 value: ThemeMode.light,
-                child: Row(
-                  children: [
-                    Icon(Icons.light_mode_outlined, size: _uiIconSize),
-                    const SizedBox(width: 8),
-                    const Text('日间'),
-                  ],
-                ),
+                child: Text('日间'),
               ),
               DropdownMenuItem(
                 value: ThemeMode.dark,
-                child: Row(
-                  children: [
-                    Icon(Icons.dark_mode_outlined, size: _uiIconSize),
-                    const SizedBox(width: 8),
-                    const Text('夜间'),
-                  ],
-                ),
+                child: Text('夜间'),
               ),
             ],
             onChanged: (value) {

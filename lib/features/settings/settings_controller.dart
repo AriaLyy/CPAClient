@@ -1,12 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-
-import 'package:archive/archive.dart';
-import 'package:path/path.dart' as p;
 
 import 'package:cpaclient/core/constants/core_defaults.dart';
 import 'package:cpaclient/core/models/app_settings.dart';
+import 'package:cpaclient/core/models/webdav_backup_version.dart';
 import 'package:cpaclient/core/services/app_services.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -14,34 +11,15 @@ import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/services.dart' show MissingPluginException;
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:webdav_client/webdav_client.dart' hide File;
 
 enum WebdavStatusLevel { idle, running, success, failure }
-
-class WebdavBackupVersion {
-  const WebdavBackupVersion({
-    required this.id,
-    required this.displayLabel,
-  });
-
-  final String id;
-  final String displayLabel;
-}
-
-class _WebdavVersionListingResult {
-  const _WebdavVersionListingResult({
-    required this.root,
-    required this.versions,
-  });
-
-  final String root;
-  final List<String> versions;
-}
 
 class SettingsController extends ChangeNotifier {
   SettingsController();
 
-  static const String _usageJsonFileName = 'usage.json';
+  static const Duration _localUsageExportInterval = Duration(minutes: 1);
+  static const Duration _postCoreReadyUsageImportDelay = Duration(seconds: 20);
+  static const String _defaultWebuiPassword = '123456';
   static const int webdavAutoBackupOnStartupOnly = -1;
   static const List<int> webdavAutoBackupIntervals = <int>[
     5,
@@ -60,9 +38,9 @@ class SettingsController extends ChangeNotifier {
   List<String> recentVersions = const [];
   WebdavStatusLevel webdavStatusLevel = WebdavStatusLevel.idle;
   String webdavStatusText = '尚未测试 WebDAV 连接';
-  bool _webdavBackupInProgress = false;
   bool _startupWebdavCheckTriggered = false;
   bool _startupAutoBackupTriggered = false;
+  bool _localUsageExportInProgress = false;
 
   ThemeMode get themeMode {
     switch (settings.themeMode) {
@@ -84,6 +62,7 @@ class SettingsController extends ChangeNotifier {
     }
     await refreshRecentVersions();
     _restartWebdavAutoBackupTimer();
+    _restartLocalUsageExportTimer();
 
     var startupReady = true;
     try {
@@ -110,9 +89,7 @@ class SettingsController extends ChangeNotifier {
     _startStatusPolling();
     if (startupReady) {
       lastStatus = '';
-      await AppServices.log.info('Startup wait before usage restore: 5s');
-      await Future<void>.delayed(const Duration(seconds: 5));
-      await _restoreLatestWebdavBackupIfAvailable(trigger: 'startup');
+      await _importLocalUsageAfterDelay(trigger: 'startup');
     }
 
     _triggerStartupWebdavCheck();
@@ -157,10 +134,11 @@ class SettingsController extends ChangeNotifier {
     required String password,
   }) async {
     final inputUrl = url.trim();
-    if (inputUrl.endsWith('/')) {
+    if (inputUrl.isNotEmpty && inputUrl.endsWith('/')) {
       return 'WebDAV 地址不能以 / 结尾';
     }
-    final normalizedUrl = inputUrl.endsWith('/CpaClient') ? inputUrl : '$inputUrl/CpaClient';
+    final normalizedUrl =
+        inputUrl.isEmpty ? '' : AppServices.webdav.normalizeUrl(inputUrl);
     settings = settings.copyWith(
       webdavUrl: normalizedUrl,
       webdavUsername: username.trim(),
@@ -193,7 +171,8 @@ class SettingsController extends ChangeNotifier {
     if (!enabled) {
       return '已关闭 WebDAV 自动备份';
     }
-    if (settings.webdavAutoBackupIntervalMinutes == webdavAutoBackupOnStartupOnly) {
+    if (settings.webdavAutoBackupIntervalMinutes ==
+        webdavAutoBackupOnStartupOnly) {
       return '已开启 WebDAV 自动备份（每次启动）';
     }
     return '已开启 WebDAV 自动备份（每 ${settings.webdavAutoBackupIntervalMinutes} 分钟）';
@@ -229,8 +208,8 @@ class SettingsController extends ChangeNotifier {
   }
 
   AppSettings _withNormalizedWebdavAutoBackupInterval(AppSettings value) {
-    final normalized =
-        _normalizeWebdavAutoBackupInterval(value.webdavAutoBackupIntervalMinutes);
+    final normalized = _normalizeWebdavAutoBackupInterval(
+        value.webdavAutoBackupIntervalMinutes);
     if (normalized == value.webdavAutoBackupIntervalMinutes) {
       return value;
     }
@@ -273,17 +252,100 @@ class SettingsController extends ChangeNotifier {
     unawaited(_performWebdavBackup(isAuto: true));
   }
 
+  Future<String> _resolveLocalUsageJsonPath() async {
+    final usageFile = await AppServices.paths.usageJsonFile();
+    return usageFile.path;
+  }
+
+  Future<void> _exportLocalUsageSnapshot({
+    required String trigger,
+    bool throwOnError = false,
+  }) async {
+    if (_localUsageExportInProgress) {
+      await AppServices.log
+          .info('Local usage export skipped: in-progress, trigger=$trigger');
+      return;
+    }
+    if (!AppServices.process.isRunning) {
+      final message =
+          'Local usage export skipped: core not running, trigger=$trigger';
+      if (throwOnError) {
+        throw Exception(message);
+      }
+      await AppServices.log.info(message);
+      return;
+    }
+    _localUsageExportInProgress = true;
+    try {
+      final usageJsonPath = await _resolveLocalUsageJsonPath();
+      final port = await AppServices.sandboxConfig.readPort();
+      final secretKey = await _resolveManagementKeyForUsage();
+      await _exportUsageJson(
+        localUsageJsonPath: usageJsonPath,
+        port: port,
+        secretKey: secretKey,
+      );
+      await AppServices.log.info(
+          'Local usage export success: trigger=$trigger output=$usageJsonPath');
+    } catch (e) {
+      if (throwOnError) {
+        rethrow;
+      }
+      await AppServices.log
+          .error('Local usage export failed: trigger=$trigger', e);
+    } finally {
+      _localUsageExportInProgress = false;
+    }
+  }
+
+  void _restartLocalUsageExportTimer() {
+    _localUsageExportTimer?.cancel();
+    _localUsageExportTimer = Timer.periodic(_localUsageExportInterval, (_) {
+      unawaited(_exportLocalUsageSnapshot(trigger: 'timer-1m'));
+    });
+  }
+
+  Future<void> _importLocalUsageIfExists({required String trigger}) async {
+    final usageJsonPath = await _resolveLocalUsageJsonPath();
+    final usageFile = File(usageJsonPath);
+    if (!usageFile.existsSync()) {
+      await AppServices.log.info(
+          'Local usage import skipped: file missing, trigger=$trigger path=$usageJsonPath');
+      return;
+    }
+    final port = await AppServices.sandboxConfig.readPort();
+    final secretKey = await _resolveManagementKeyForUsage();
+    await _importUsageJsonWithRetry(
+      localUsageJsonPath: usageJsonPath,
+      port: port,
+      secretKey: secretKey,
+      trigger: trigger,
+    );
+    await AppServices.log.info(
+        'Local usage import completed: trigger=$trigger input=$usageJsonPath');
+  }
+
+  Future<void> _importLocalUsageAfterDelay({required String trigger}) async {
+    await AppServices.log.info(
+      'Local usage import delayed: trigger=$trigger wait=${_postCoreReadyUsageImportDelay.inSeconds}s',
+    );
+    await Future<void>.delayed(_postCoreReadyUsageImportDelay);
+    await _importLocalUsageIfExists(trigger: trigger);
+  }
+
   Future<bool> _restoreLatestWebdavBackupIfAvailable({
     required String trigger,
   }) async {
     if (!_hasCompleteWebdavConfig()) {
-      await AppServices.log.info('WebDAV restore latest skipped: incomplete config, trigger=$trigger');
+      await AppServices.log.info(
+          'WebDAV restore latest skipped: incomplete config, trigger=$trigger');
       return false;
     }
     try {
       final versions = await listWebdavBackupVersions();
       if (versions.isEmpty) {
-        await AppServices.log.info('WebDAV restore latest skipped: no backups, trigger=$trigger');
+        await AppServices.log.info(
+            'WebDAV restore latest skipped: no backups, trigger=$trigger');
         return false;
       }
       final latestVersion = versions.first.id;
@@ -292,7 +354,9 @@ class SettingsController extends ChangeNotifier {
       );
       return await _restoreUsageFromWebdav(versionId: latestVersion);
     } catch (e) {
-      await AppServices.log.error('WebDAV restore latest usage failed: trigger=$trigger', _formatDioError(e));
+      await AppServices.log.error(
+          'WebDAV restore latest usage failed: trigger=$trigger',
+          _formatDioError(e));
       return false;
     }
   }
@@ -302,34 +366,17 @@ class SettingsController extends ChangeNotifier {
     required String username,
     required String password,
   }) async {
-    final inputUrl = url.trim();
-    if (inputUrl.isEmpty) {
-      final msg = '请先填写 WebDAV 地址';
-      _setWebdavStatus(WebdavStatusLevel.failure, msg);
-      return msg;
-    }
-    if (inputUrl.endsWith('/')) {
-      final msg = 'WebDAV 地址不能以 / 结尾';
-      _setWebdavStatus(WebdavStatusLevel.failure, msg);
-      return msg;
-    }
-    final normalizedUrl = inputUrl.endsWith('/CpaClient') ? inputUrl : '$inputUrl/CpaClient';
     _setWebdavStatus(WebdavStatusLevel.running, '正在测试连接...');
     try {
-      await AppServices.log.info('WebDAV test start: url=$normalizedUrl user=${username.trim()}');
-      final client = _createWebdavClient(
-        url: normalizedUrl,
-        username: username.trim(),
+      await AppServices.webdav.testConnection(
+        url: url,
+        username: username,
         password: password,
-        debug: true,
       );
-      await client.ping();
-      await AppServices.log.info('WebDAV test success: url=$normalizedUrl');
       const msg = 'WebDAV 连接成功';
       _setWebdavStatus(WebdavStatusLevel.success, msg);
       return msg;
     } catch (e) {
-      await AppServices.log.error('WebDAV test failed: url=$normalizedUrl', _formatDioError(e));
       final msg = 'WebDAV 连接失败: $e';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
@@ -341,222 +388,91 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<String> _performWebdavBackup({required bool isAuto}) async {
-    if (_webdavBackupInProgress) {
-      const msg = '已有备份任务正在执行，已跳过';
-      await AppServices.log.info('WebDAV backup skipped: in-progress, isAuto=$isAuto');
-      return msg;
-    }
-    if (settings.webdavUrl.trim().isEmpty) {
+    final url = settings.webdavUrl.trim();
+    if (url.isEmpty) {
       const msg = '请先填写 WebDAV 地址';
       if (!isAuto) {
         _setWebdavStatus(WebdavStatusLevel.failure, msg);
       }
-      await AppServices.log.info('WebDAV backup skipped: empty url, isAuto=$isAuto');
+      await AppServices.log
+          .info('WebDAV backup skipped: empty url, isAuto=$isAuto');
       return msg;
     }
     if (!isAuto) {
       _setWebdavStatus(WebdavStatusLevel.running, '正在备份配置...');
     }
-    _webdavBackupInProgress = true;
     try {
-      final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
-      final authDir = await AppServices.sandboxConfig.readAuthDir();
-      final authRoot = AppServices.paths.resolveAuthDir(authDir);
-      final authJsonFiles = _listRootJsonFiles(authRoot);
-      final usageJsonPath = p.join(cfg.parent.path, _usageJsonFileName);
-      final port = await AppServices.sandboxConfig.readPort();
-      final secretKey = await _resolveManagementKeyForUsage();
-      await _exportUsageJson(localUsageJsonPath: usageJsonPath, port: port, secretKey: secretKey);
-      final versionId = _newBackupVersionId();
-      final versionRoot = '${CoreDefaults.webdavBackupVersionsDirName}/$versionId';
-      final remoteArchivePath = '$versionRoot/backup.tar.gz';
-      await AppServices.log.info(
-        'WebDAV backup start: url=${settings.webdavUrl} version=$versionId local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length} usage=$usageJsonPath isAuto=$isAuto',
-      );
-      final client = _createWebdavClient(
-        url: settings.webdavUrl,
+      final msg = await AppServices.webdav.backup(
+        url: url,
         username: settings.webdavUsername,
         password: settings.webdavPassword,
-        debug: false,
+        settingsWebuiSecretKey: settings.webuiSecretKey,
+        defaultWebuiPassword: _defaultWebuiPassword,
+        isCoreRunning: AppServices.process.isRunning,
+        isAuto: isAuto,
       );
-
-      final archivePath = await _buildBackupArchive(
-        localConfigPath: cfg.path,
-        localUsageJsonPath: usageJsonPath,
-        localAuthJsonFiles: authJsonFiles,
-      );
-      try {
-        await _writeBackupArchiveToWebdav(
-          client: client,
-          localArchivePath: archivePath,
-          remoteArchivePath: remoteArchivePath,
-        );
-      } finally {
-        final archiveFile = File(archivePath);
-        if (archiveFile.existsSync()) {
-          archiveFile.deleteSync();
-        }
-      }
-
-      final cleanupWarning = await _cleanupOldWebdavBackups();
-      final msgBase =
-          '已备份压缩包版本 $versionId（backup.tar.gz，最多保留 ${CoreDefaults.webdavBackupMaxVersions} 个）';
-      final msg = cleanupWarning == null ? msgBase : '$msgBase；$cleanupWarning';
-      await AppServices.log.info('WebDAV backup success: $msg, isAuto=$isAuto');
       if (!isAuto) {
         _setWebdavStatus(WebdavStatusLevel.success, msg);
       }
       return msg;
     } catch (e) {
-      await AppServices.log.error('WebDAV backup failed, isAuto=$isAuto', _formatDioError(e));
       final logPath = await AppServices.log.logFilePath();
       final msg = 'WebDAV 备份失败: $e\n日志: $logPath';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
-    } finally {
-      _webdavBackupInProgress = false;
     }
   }
 
   Future<bool> _restoreUsageFromWebdav({required String versionId}) async {
-    if (settings.webdavUrl.trim().isEmpty) {
+    final url = settings.webdavUrl.trim();
+    if (url.isEmpty) {
       return false;
     }
-
-    final selectedVersionId = versionId.trim();
-    if (selectedVersionId.isEmpty) {
-      return false;
-    }
-
-    final remoteArchivePath =
-        '${CoreDefaults.webdavBackupVersionsDirName}/$selectedVersionId/backup.tar.gz';
-
-    try {
-      final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
-      final usageJsonPath = p.join(cfg.parent.path, _usageJsonFileName);
-      final localArchivePath = p.join(cfg.parent.path, 'webdav_restore_backup_usage.tar.gz');
-
-      final client = _createWebdavClient(
-        url: settings.webdavUrl,
-        username: settings.webdavUsername,
-        password: settings.webdavPassword,
-        debug: false,
-      );
-
-      await _readBackupArchiveFromWebdav(
-        client: client,
-        localArchivePath: localArchivePath,
-        remoteArchivePath: remoteArchivePath,
-      );
-
-      try {
-        _extractUsageFromBackupArchive(
-          localArchivePath: localArchivePath,
-          localUsageJsonPath: usageJsonPath,
-        );
-      } finally {
-        final archiveFile = File(localArchivePath);
-        if (archiveFile.existsSync()) {
-          archiveFile.deleteSync();
-        }
-      }
-
-      final port = await AppServices.sandboxConfig.readPort();
-      final secretKey = await _resolveManagementKeyForUsage();
-      await _importUsageJsonWithRetry(
-        localUsageJsonPath: usageJsonPath,
-        port: port,
-        secretKey: secretKey,
-        trigger: 'latest-usage-restore',
-      );
+    final restored = await AppServices.webdav.restoreUsage(
+      url: url,
+      username: settings.webdavUsername,
+      password: settings.webdavPassword,
+      versionId: versionId,
+      settingsWebuiSecretKey: settings.webuiSecretKey,
+      defaultWebuiPassword: _defaultWebuiPassword,
+    );
+    if (restored) {
       currentPort = await AppServices.sandboxConfig.readPort();
       notifyListeners();
-      await AppServices.log.info(
-        'WebDAV restore usage success: version=$selectedVersionId',
-      );
-      return true;
-    } catch (e) {
-      await AppServices.log.error('WebDAV restore usage failed', _formatDioError(e));
-      return false;
     }
+    return restored;
   }
 
   Future<String> restoreConfigFromWebdav({required String versionId}) async {
-    if (settings.webdavUrl.trim().isEmpty) {
+    final url = settings.webdavUrl.trim();
+    if (url.isEmpty) {
       const msg = '请先填写 WebDAV 地址';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
     }
 
-    final selectedVersionId = versionId.trim();
-    if (selectedVersionId.isEmpty) {
+    if (versionId.trim().isEmpty) {
       const msg = '请选择要还原的备份版本';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
     }
 
-    final remoteArchivePath =
-        '${CoreDefaults.webdavBackupVersionsDirName}/$selectedVersionId/backup.tar.gz';
-
     _setWebdavStatus(WebdavStatusLevel.running, '正在还原配置...');
     try {
-      final cfg = await AppServices.sandboxConfig.ensureSandboxConfig();
-      final authDir = await AppServices.sandboxConfig.readAuthDir();
-      final authRoot = AppServices.paths.resolveAuthDir(authDir);
-      final usageJsonPath = p.join(cfg.parent.path, _usageJsonFileName);
-      final localArchivePath = p.join(cfg.parent.path, 'webdav_restore_backup.tar.gz');
-      await AppServices.log.info(
-        'WebDAV restore start: url=${settings.webdavUrl} version=$selectedVersionId local=${cfg.path} restoreTo=${authRoot.path} usage=$usageJsonPath archive=$localArchivePath',
-      );
-
-      final client = _createWebdavClient(
-        url: settings.webdavUrl,
+      final result = await AppServices.webdav.restoreConfig(
+        url: url,
         username: settings.webdavUsername,
         password: settings.webdavPassword,
-        debug: false,
+        versionId: versionId,
+        settingsWebuiSecretKey: settings.webuiSecretKey,
+        defaultWebuiPassword: _defaultWebuiPassword,
       );
-
-      await _readBackupArchiveFromWebdav(
-        client: client,
-        localArchivePath: localArchivePath,
-        remoteArchivePath: remoteArchivePath,
-      );
-
-      int restoredJsonCount = 0;
-      try {
-        restoredJsonCount = _extractBackupArchive(
-          localArchivePath: localArchivePath,
-          localConfigPath: cfg.path,
-          localUsageJsonPath: usageJsonPath,
-          localAuthDir: authRoot,
-        );
-      } finally {
-        final archiveFile = File(localArchivePath);
-        if (archiveFile.existsSync()) {
-          archiveFile.deleteSync();
-        }
-      }
-
-      await _restartCoreAfterRestore();
-      final restoredPort = await AppServices.sandboxConfig.readPort();
-      final restoredSecretKey = await _resolveManagementKeyForUsage();
-      await _importUsageJsonWithRetry(
-        localUsageJsonPath: usageJsonPath,
-        port: restoredPort,
-        secretKey: restoredSecretKey,
-        trigger: 'manual-config-restore',
-      );
-      currentPort = restoredPort;
-      webuiPassword = restoredSecretKey;
+      currentPort = result.restoredPort;
+      webuiPassword = result.restoredSecretKey;
       notifyListeners();
-      await AppServices.log.info(
-        'WebDAV restore success: version=$selectedVersionId archive=backup.tar.gz auth-json($restoredJsonCount)',
-      );
-      final msg = '已解压还原版本 $selectedVersionId（backup.tar.gz，auth-json $restoredJsonCount 个），并重启核心';
-      _setWebdavStatus(WebdavStatusLevel.success, msg);
-      return msg;
+      _setWebdavStatus(WebdavStatusLevel.success, result.message);
+      return result.message;
     } catch (e) {
-      await AppServices.log.error('WebDAV restore failed', _formatDioError(e));
       final logPath = await AppServices.log.logFilePath();
       final msg = 'WebDAV 还原失败: $e\n日志: $logPath';
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
@@ -564,353 +480,19 @@ class SettingsController extends ChangeNotifier {
     }
   }
 
-  List<File> _listRootJsonFiles(Directory root) {
-    if (!root.existsSync()) {
-      return const <File>[];
-    }
-    return root
-        .listSync(recursive: false, followLinks: false)
-        .whereType<File>()
-        .where((file) => file.path.toLowerCase().endsWith('.json'))
-        .toList(growable: false);
-  }
-
-  List<String> _remotePathCandidates(String remotePath) {
-    final normalized = remotePath.startsWith('/')
-        ? remotePath.substring(1)
-        : remotePath;
-    return <String>[normalized, '/$normalized'];
-  }
-
-  String _newBackupVersionId() {
-    final now = DateTime.now().toUtc();
-    String pad2(int value) => value.toString().padLeft(2, '0');
-    return '${now.year}${pad2(now.month)}${pad2(now.day)}T${pad2(now.hour)}${pad2(now.minute)}${pad2(now.second)}Z';
-  }
-
-  DateTime? _parseBackupVersionTime(String versionId) {
-    final match = RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$').firstMatch(versionId);
-    if (match == null) {
-      return null;
-    }
-    return DateTime.utc(
-      int.parse(match.group(1)!),
-      int.parse(match.group(2)!),
-      int.parse(match.group(3)!),
-      int.parse(match.group(4)!),
-      int.parse(match.group(5)!),
-      int.parse(match.group(6)!),
-    );
-  }
-
-  String _formatBackupVersionLabel(String versionId) {
-    final time = _parseBackupVersionTime(versionId);
-    if (time == null) {
-      return versionId;
-    }
-    final local = time.toLocal();
-    String pad2(int value) => value.toString().padLeft(2, '0');
-    return '${local.year}-${pad2(local.month)}-${pad2(local.day)} ${pad2(local.hour)}:${pad2(local.minute)}:${pad2(local.second)}';
-  }
-
-  Future<_WebdavVersionListingResult> _listVersionDirectories() async {
-    final client = _createWebdavClient(
+  Future<List<WebdavBackupVersion>> listWebdavBackupVersions() async {
+    return AppServices.webdav.listVersions(
       url: settings.webdavUrl,
       username: settings.webdavUsername,
       password: settings.webdavPassword,
-      debug: false,
-    );
-    final root = CoreDefaults.webdavBackupVersionsDirName;
-
-    try {
-      final entries = await client.readDir(root);
-      final versions = <String>[];
-      for (final entry in entries.where((entry) => entry.isDir == true)) {
-        final name = p.basename((entry.path ?? '').replaceAll('\\', '/'));
-        if (_parseBackupVersionTime(name) == null) {
-          continue;
-        }
-        final remoteArchivePath = '$root/$name/backup.tar.gz';
-        if (await _remoteFileExists(client: client, remotePath: remoteArchivePath)) {
-          versions.add(name);
-        }
-      }
-      final sorted = versions.toSet().toList(growable: false)
-        ..sort((String a, String b) => b.compareTo(a));
-      return _WebdavVersionListingResult(root: root, versions: sorted);
-    } catch (e) {
-      if (_isRemoteNotFound(e)) {
-        return _WebdavVersionListingResult(root: root, versions: const <String>[]);
-      }
-      rethrow;
-    }
-  }
-
-  Future<List<WebdavBackupVersion>> listWebdavBackupVersions() async {
-    if (settings.webdavUrl.trim().isEmpty) {
-      return const <WebdavBackupVersion>[];
-    }
-
-    final listing = await _listVersionDirectories();
-    return listing.versions
-        .map((id) => WebdavBackupVersion(id: id, displayLabel: _formatBackupVersionLabel(id)))
-        .toList(growable: false);
-  }
-
-  Future<String?> _cleanupOldWebdavBackups() async {
-    try {
-      final listing = await _listVersionDirectories();
-      if (listing.versions.length <= CoreDefaults.webdavBackupMaxVersions) {
-        return null;
-      }
-      final toDelete = listing.versions.skip(CoreDefaults.webdavBackupMaxVersions);
-      final client = _createWebdavClient(
-        url: settings.webdavUrl,
-        username: settings.webdavUsername,
-        password: settings.webdavPassword,
-        debug: false,
-      );
-      for (final version in toDelete) {
-        await client.removeAll('${listing.root}/$version');
-      }
-      return null;
-    } catch (e) {
-      await AppServices.log.error('WebDAV backup cleanup failed', _formatDioError(e));
-      return '清理旧版本失败（不影响本次备份）';
-    }
-  }
-
-  Future<bool> _remoteFileExists({
-    required dynamic client,
-    required String remotePath,
-  }) async {
-    try {
-      await client.read(remotePath);
-      return true;
-    } catch (e) {
-      if (_isRemoteNotFound(e)) {
-        return false;
-      }
-      rethrow;
-    }
-  }
-
-  Future<String> _buildBackupArchive({
-    required String localConfigPath,
-    required String localUsageJsonPath,
-    required List<File> localAuthJsonFiles,
-  }) async {
-    final configFile = File(localConfigPath);
-    final usageFile = File(localUsageJsonPath);
-    if (!configFile.existsSync()) {
-      throw Exception('config.yaml 不存在: $localConfigPath');
-    }
-    if (!usageFile.existsSync()) {
-      throw Exception('usage.json 不存在: $localUsageJsonPath');
-    }
-
-    final tmpDir = await Directory.systemTemp.createTemp('cpaclient_webdav_backup_');
-    final archivePath = p.join(tmpDir.path, 'backup.tar.gz');
-
-    final archive = Archive()
-      ..addFile(ArchiveFile('config.yaml', configFile.lengthSync(), configFile.readAsBytesSync()))
-      ..addFile(ArchiveFile('usage.json', usageFile.lengthSync(), usageFile.readAsBytesSync()));
-
-    for (final jsonFile in localAuthJsonFiles) {
-      final name = p.basename(jsonFile.path);
-      final bytes = jsonFile.readAsBytesSync();
-      archive.addFile(ArchiveFile('${CoreDefaults.webdavAuthJsonDirName}/$name', bytes.length, bytes));
-    }
-
-    final tarData = TarEncoder().encode(archive);
-    final gzipData = GZipEncoder().encode(tarData);
-
-    await File(archivePath).writeAsBytes(gzipData, flush: true);
-    return archivePath;
-  }
-
-  Future<void> _writeBackupArchiveToWebdav({
-    required dynamic client,
-    required String localArchivePath,
-    required String remoteArchivePath,
-  }) async {
-    await _writeFileWithCandidates(
-      client: client,
-      localFilePath: localArchivePath,
-      remoteCandidates: _remotePathCandidates(remoteArchivePath),
-      logPrefix: 'WebDAV backup archive',
     );
   }
 
-  Future<void> _writeFileWithCandidates({
-    required dynamic client,
-    required String localFilePath,
-    required List<String> remoteCandidates,
-    required String logPrefix,
-  }) async {
-    final localFile = File(localFilePath);
-    if (!localFile.existsSync()) {
-      throw Exception('本地文件不存在: $localFilePath');
-    }
-    Object? lastError;
-    for (final remotePath in remoteCandidates) {
-      try {
-        await AppServices.log.info('$logPrefix try path: $remotePath');
-        await client.writeFromFile(localFilePath, remotePath);
-        await AppServices.log.info('$logPrefix path success: $remotePath');
-        return;
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
-      }
-    }
-    throw Exception('上传文件失败: ${_formatDioError(lastError ?? 'unknown error')}');
-  }
-
-  Future<void> _readBackupArchiveFromWebdav({
-    required dynamic client,
-    required String localArchivePath,
-    required String remoteArchivePath,
-  }) async {
-    await _readFileWithCandidates(
-      client: client,
-      localFilePath: localArchivePath,
-      remoteCandidates: _remotePathCandidates(remoteArchivePath),
-      logPrefix: 'WebDAV restore archive',
+  Future<String> _resolveManagementKeyForUsage() {
+    return AppServices.managementAccess.resolveUsageSecretKey(
+      settingsWebuiSecretKey: settings.webuiSecretKey,
+      defaultSecretKey: _defaultWebuiPassword,
     );
-  }
-
-  Future<void> _readFileWithCandidates({
-    required dynamic client,
-    required String localFilePath,
-    required List<String> remoteCandidates,
-    required String logPrefix,
-  }) async {
-    Object? lastError;
-    for (final remotePath in remoteCandidates) {
-      try {
-        await AppServices.log.info('$logPrefix try path: $remotePath');
-        await client.read2File(remotePath, localFilePath);
-        await AppServices.log.info('$logPrefix path success: $remotePath');
-        return;
-      } catch (e) {
-        lastError = e;
-        await AppServices.log.error('$logPrefix path failed: $remotePath', _formatDioError(e));
-      }
-    }
-    throw Exception('下载文件失败: ${_formatDioError(lastError ?? 'unknown error')}');
-  }
-
-  void _extractUsageFromBackupArchive({
-    required String localArchivePath,
-    required String localUsageJsonPath,
-  }) {
-    final archiveFile = File(localArchivePath);
-    if (!archiveFile.existsSync()) {
-      throw Exception('备份压缩包不存在: $localArchivePath');
-    }
-
-    final tmpDir = Directory.systemTemp.createTempSync('cpaclient_webdav_restore_usage_');
-    try {
-      final compressed = archiveFile.readAsBytesSync();
-      final tarData = GZipDecoder().decodeBytes(compressed);
-      final archive = TarDecoder().decodeBytes(tarData);
-      for (final entry in archive.files.where((entry) => entry.isFile)) {
-        final outputPath = p.join(tmpDir.path, entry.name);
-        final outputFile = File(outputPath);
-        outputFile.parent.createSync(recursive: true);
-        outputFile.writeAsBytesSync(entry.content as List<int>, flush: true);
-      }
-
-      final extractedUsage = File(p.join(tmpDir.path, 'usage.json'));
-      if (!extractedUsage.existsSync()) {
-        throw Exception('压缩包缺少 usage.json');
-      }
-      extractedUsage.copySync(localUsageJsonPath);
-    } finally {
-      if (tmpDir.existsSync()) {
-        tmpDir.deleteSync(recursive: true);
-      }
-    }
-  }
-
-  int _extractBackupArchive({
-    required String localArchivePath,
-    required String localConfigPath,
-    required String localUsageJsonPath,
-    required Directory localAuthDir,
-  }) {
-    final archiveFile = File(localArchivePath);
-    if (!archiveFile.existsSync()) {
-      throw Exception('备份压缩包不存在: $localArchivePath');
-    }
-
-    final tmpDir = Directory.systemTemp.createTempSync('cpaclient_webdav_restore_');
-    try {
-      final compressed = archiveFile.readAsBytesSync();
-      final tarData = GZipDecoder().decodeBytes(compressed);
-      final archive = TarDecoder().decodeBytes(tarData);
-      for (final entry in archive.files.where((entry) => entry.isFile)) {
-        final outputPath = p.join(tmpDir.path, entry.name);
-        final outputFile = File(outputPath);
-        outputFile.parent.createSync(recursive: true);
-        outputFile.writeAsBytesSync(entry.content as List<int>, flush: true);
-      }
-
-      final extractedConfig = File(p.join(tmpDir.path, 'config.yaml'));
-      final extractedUsage = File(p.join(tmpDir.path, 'usage.json'));
-      if (!extractedConfig.existsSync()) {
-        throw Exception('压缩包缺少 config.yaml');
-      }
-      if (!extractedUsage.existsSync()) {
-        throw Exception('压缩包缺少 usage.json');
-      }
-
-      extractedConfig.copySync(localConfigPath);
-      extractedUsage.copySync(localUsageJsonPath);
-
-      if (!localAuthDir.existsSync()) {
-        localAuthDir.createSync(recursive: true);
-      }
-
-      var restoredAuth = 0;
-      final extractedAuthDir = Directory(p.join(tmpDir.path, CoreDefaults.webdavAuthJsonDirName));
-      if (extractedAuthDir.existsSync()) {
-        final authJsonFiles = extractedAuthDir
-            .listSync(recursive: false, followLinks: false)
-            .whereType<File>()
-            .where((file) => file.path.toLowerCase().endsWith('.json'))
-            .toList(growable: false);
-        for (final file in authJsonFiles) {
-          final name = p.basename(file.path);
-          file.copySync(p.join(localAuthDir.path, name));
-          restoredAuth += 1;
-        }
-      }
-
-      return restoredAuth;
-    } finally {
-      if (tmpDir.existsSync()) {
-        tmpDir.deleteSync(recursive: true);
-      }
-    }
-  }
-
-  Future<String> _resolveManagementKeyForUsage() async {
-    final configKey = (await AppServices.sandboxConfig.readSecretKey()).trim();
-    if (configKey.isNotEmpty) {
-      await AppServices.log.info('Usage key source: config.yaml secret-key');
-      return configKey;
-    }
-
-    final settingsKey = settings.webuiSecretKey.trim();
-    if (settingsKey.isNotEmpty) {
-      await AppServices.log.info('Usage key source: settings.webuiSecretKey fallback');
-      return settingsKey;
-    }
-
-    await AppServices.log.error('Usage key source missing', 'config.yaml secret-key and settings.webuiSecretKey are both empty');
-    throw Exception('导出 usage.json 失败: 请先在设置页保存 WebUI 密码（明文管理密钥）');
   }
 
   Future<void> _exportUsageJson({
@@ -920,26 +502,21 @@ class SettingsController extends ChangeNotifier {
   }) async {
     final key = secretKey.trim();
     if (key.isEmpty) {
-      throw Exception('导出 usage.json 失败: config.yaml 未配置 remote-management.secret-key');
+      throw Exception('导出 usage.json 失败: WebUI 密码不能为空');
     }
     final uri = Uri.parse('http://127.0.0.1:$port/v0/management/usage/export');
-    await AppServices.log.info('Usage export start: uri=$uri output=$localUsageJsonPath');
-    final dio = Dio();
+    await AppServices.log
+        .info('Usage export start: uri=$uri output=$localUsageJsonPath');
     try {
-      final response = await dio.getUri<dynamic>(
-        uri,
-        options: Options(
-          headers: <String, String>{'X-Management-Key': key},
-          responseType: ResponseType.plain,
-        ),
+      await AppServices.usageNetwork.downloadUsageJson(
+        uri: uri,
+        secretKey: key,
+        outputPath: localUsageJsonPath,
       );
-      final body = _responseBodyToText(response.data);
-      await File(localUsageJsonPath).writeAsString(body);
-      await AppServices.log.info('Usage export success: uri=$uri output=$localUsageJsonPath');
+      await AppServices.log
+          .info('Usage export success: uri=$uri output=$localUsageJsonPath');
     } on DioException catch (e) {
       throw Exception('导出 usage.json 失败: ${_formatDioError(e)}');
-    } finally {
-      dio.close();
     }
   }
 
@@ -950,33 +527,27 @@ class SettingsController extends ChangeNotifier {
   }) async {
     final key = secretKey.trim();
     if (key.isEmpty) {
-      throw Exception('导入 usage.json 失败: config.yaml 未配置 remote-management.secret-key');
+      throw Exception(
+          '导入 usage.json 失败: config.yaml 未配置 remote-management.secret-key');
     }
     final usageFile = File(localUsageJsonPath);
     if (!usageFile.existsSync()) {
       throw Exception('导入 usage.json 失败: 本地文件不存在 $localUsageJsonPath');
     }
     final uri = Uri.parse('http://127.0.0.1:$port/v0/management/usage/import');
-    await AppServices.log.info('Usage import start: uri=$uri input=$localUsageJsonPath');
-    final dio = Dio();
+    await AppServices.log
+        .info('Usage import start: uri=$uri input=$localUsageJsonPath');
     try {
       final payload = await usageFile.readAsString();
-      await dio.postUri<dynamic>(
-        uri,
-        data: payload,
-        options: Options(
-          headers: <String, String>{
-            'X-Management-Key': key,
-            'Content-Type': 'application/json',
-          },
-          responseType: ResponseType.plain,
-        ),
+      await AppServices.usageNetwork.importUsageJson(
+        uri: uri,
+        secretKey: key,
+        payload: payload,
       );
-      await AppServices.log.info('Usage import success: uri=$uri input=$localUsageJsonPath');
+      await AppServices.log
+          .info('Usage import success: uri=$uri input=$localUsageJsonPath');
     } on DioException catch (e) {
       throw Exception('导入 usage.json 失败: ${_formatDioError(e)}');
-    } finally {
-      dio.close();
     }
   }
 
@@ -1020,63 +591,8 @@ class SettingsController extends ChangeNotifier {
     throw Exception('导入 usage.json 失败（重试 $maxAttempts 次）: $lastError');
   }
 
-  String _responseBodyToText(dynamic data) {
-    if (data == null) {
-      return '';
-    }
-    if (data is String) {
-      return data;
-    }
-    if (data is List<int>) {
-      return utf8.decode(data);
-    }
-    return jsonEncode(data);
-  }
-
-  Future<void> _restartCoreAfterRestore() async {
-    await AppServices.log.info('WebDAV restore restarting core begin');
-    await AppServices.process.stop();
-    await AppServices.process.start();
-    await AppServices.log.info('WebDAV restore restarting core completed');
-  }
-
-  bool _isRemoteNotFound(Object error) {
-    if (error is DioException) {
-      final status = error.response?.statusCode;
-      if (status == 404) {
-        return true;
-      }
-    }
-    final text = error.toString();
-    return text.contains('status=404') || text.contains('404 Not Found');
-  }
-
-  dynamic _createWebdavClient({
-    required String url,
-    required String username,
-    required String password,
-    required bool debug,
-  }) {
-    final client = newClient(
-      url,
-      user: username,
-      password: password,
-      debug: debug,
-    );
-    client.setHeaders(<String, dynamic>{'content-type': 'application/octet-stream'});
-    return client;
-  }
-
   String _formatDioError(Object error) {
-    if (error is DioException) {
-      final status = error.response?.statusCode;
-      final method = error.requestOptions.method;
-      final uri = error.requestOptions.uri;
-      final data = error.response?.data;
-      final body = data == null ? 'null' : data.toString();
-      return 'DioException(type=${error.type}, status=$status, method=$method, uri=$uri, message=${error.message}, body=$body)';
-    }
-    return error.toString();
+    return AppServices.webdav.formatDioErrorForTest(error);
   }
 
   Future<String> openAbout() async {
@@ -1091,7 +607,8 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> openWebUi() async {
     try {
-      final uri = Uri.parse('http://127.0.0.1:$currentPort/management.html#/login');
+      final uri =
+          Uri.parse('http://127.0.0.1:$currentPort/management.html#/login');
       await launchUrl(uri, mode: LaunchMode.externalApplication);
       return '已打开 WebUI';
     } catch (e) {
@@ -1132,22 +649,18 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> updateCore() async {
     try {
-      await AppServices.log.info('Core update requested: version=${settings.coreVersion}');
-      await AppServices.startup.updateCore(
+      currentPort = await AppServices.coreControl.updateCore(
         version: settings.coreVersion,
         githubToken: settings.githubToken,
       );
-      currentPort = await AppServices.sandboxConfig.readPort();
       notifyListeners();
-      await AppServices.log.info('Core update post-restart wait before usage restore: 5s');
-      await Future<void>.delayed(const Duration(seconds: 5));
-      final restored = await _restoreLatestWebdavBackupIfAvailable(
-        trigger: 'core-update',
-      );
-      await AppServices.log.info('Core update success: version=${settings.coreVersion}');
-      return restored ? '核心更新完成并已重启，已恢复最新 usage.json' : '核心更新完成并已重启';
+      await _importLocalUsageAfterDelay(trigger: 'core-update');
+      await AppServices.log
+          .info('Core update success: version=${settings.coreVersion}');
+      return '核心更新完成并已重启';
     } catch (e) {
-      await AppServices.log.error('Core update failed: version=${settings.coreVersion}', e);
+      await AppServices.log
+          .error('Core update failed: version=${settings.coreVersion}', e);
       final logPath = await AppServices.log.logFilePath();
       return '核心更新失败: $e\n日志: $logPath';
     }
@@ -1155,18 +668,11 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> restartCore() async {
     try {
-      await AppServices.log.info('Core restart requested');
-      await AppServices.process.stop();
-      await AppServices.process.start();
-      currentPort = await AppServices.sandboxConfig.readPort();
+      currentPort = await AppServices.coreControl.restartCore();
       notifyListeners();
-      await AppServices.log.info('Core restart post-start wait before usage restore: 5s');
-      await Future<void>.delayed(const Duration(seconds: 5));
-      final restored = await _restoreLatestWebdavBackupIfAvailable(
-        trigger: 'manual-restart',
-      );
+      await _importLocalUsageAfterDelay(trigger: 'manual-restart');
       await AppServices.log.info('Core restart success');
-      return restored ? '核心已重启，已恢复最新 usage.json' : '核心已重启';
+      return '核心已重启';
     } catch (e) {
       await AppServices.log.error('Core restart failed', e);
       final logPath = await AppServices.log.logFilePath();
@@ -1176,7 +682,7 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> stopCore() async {
     try {
-      await AppServices.process.stop();
+      await AppServices.coreControl.stopCore();
       notifyListeners();
       return '核心已停止';
     } catch (e) {
@@ -1241,13 +747,16 @@ class SettingsController extends ChangeNotifier {
       if (recentVersions.isEmpty) {
         recentVersions = [settings.coreVersion];
       }
-      if (recentVersions.isNotEmpty && !recentVersions.contains(settings.coreVersion)) {
+      if (recentVersions.isNotEmpty &&
+          !recentVersions.contains(settings.coreVersion)) {
         settings = settings.copyWith(coreVersion: recentVersions.first);
         await AppServices.settings.save(settings);
       }
     } catch (e) {
       await AppServices.log.error('Load recent versions failed', e);
-      recentVersions = settings.coreVersion.trim().isEmpty ? const [] : [settings.coreVersion];
+      recentVersions = settings.coreVersion.trim().isEmpty
+          ? const []
+          : [settings.coreVersion];
     }
   }
 
@@ -1255,6 +764,7 @@ class SettingsController extends ChangeNotifier {
 
   Timer? _statusTimer;
   Timer? _webdavAutoBackupTimer;
+  Timer? _localUsageExportTimer;
 
   void _startStatusPolling() {
     _statusTimer?.cancel();
@@ -1269,8 +779,8 @@ class SettingsController extends ChangeNotifier {
     if (!settings.webdavAutoBackupEnabled) {
       return;
     }
-    final normalizedInterval =
-        _normalizeWebdavAutoBackupInterval(settings.webdavAutoBackupIntervalMinutes);
+    final normalizedInterval = _normalizeWebdavAutoBackupInterval(
+        settings.webdavAutoBackupIntervalMinutes);
     if (normalizedInterval == webdavAutoBackupOnStartupOnly) {
       return;
     }
@@ -1308,6 +818,8 @@ class SettingsController extends ChangeNotifier {
     _statusTimer = null;
     _webdavAutoBackupTimer?.cancel();
     _webdavAutoBackupTimer = null;
+    _localUsageExportTimer?.cancel();
+    _localUsageExportTimer = null;
     await AppServices.startup.shutdown();
   }
 }
