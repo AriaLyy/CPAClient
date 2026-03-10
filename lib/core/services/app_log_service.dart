@@ -1,9 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cpaclient/core/services/sandbox_path_service.dart';
 
 class AppLogService {
   AppLogService(this._paths);
+
+  static const int _maxLogSizeBytes = 1024 * 1024;
 
   final SandboxPathService _paths;
 
@@ -38,8 +41,26 @@ class AppLogService {
     if (!file.parent.existsSync()) {
       file.parent.createSync(recursive: true);
     }
+    await _truncateIfNeeded(file);
     final ts = DateTime.now().toIso8601String();
     final line = '[$ts] [$level] $message\n';
     await file.writeAsString(line, mode: FileMode.append, flush: true);
+  }
+
+  Future<void> _truncateIfNeeded(File file) async {
+    if (!file.existsSync()) {
+      return;
+    }
+    final length = await file.length();
+    if (length < _maxLogSizeBytes) {
+      return;
+    }
+
+    final bytes = await file.readAsBytes();
+    final start = bytes.length - (_maxLogSizeBytes ~/ 2);
+    final truncated = utf8.decode(bytes.sublist(start), allowMalformed: true);
+    final marker =
+        '[${DateTime.now().toIso8601String()}] [INFO] log truncated to keep within 1MB\n';
+    await file.writeAsString('$marker$truncated', flush: true);
   }
 }

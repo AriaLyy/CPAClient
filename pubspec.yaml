@@ -43,6 +43,7 @@ dependencies:
   webdav_client: ^1.2.2
   http: ^1.5.0
   cryptography: ^2.7.0
+  google_fonts: ^6.3.0
 
 dev_dependencies:
   flutter_test:
@@ -59,10 +60,6 @@ flutter:
   assets:
     - configs/config.yaml
     - macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png
-  fonts:
-    - family: NotoSansSC
-      fonts:
-        - asset: assets/fonts/NotoSansSC-Variable.ttf
 
 flutter_launcher_icons:
   android: false

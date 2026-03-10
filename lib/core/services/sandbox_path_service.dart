@@ -62,6 +62,11 @@ class SandboxPathService {
     return File(p.join(root.path, CoreDefaults.sandboxLogFileName));
   }
 
+  Future<File> usageJsonFile() async {
+    final config = await configDir();
+    return File(p.join(config.path, 'usage.json'));
+  }
+
   String homeDirPath() {
     final env = Platform.environment;
     final home = env['HOME'];
@@ -74,7 +79,10 @@ class SandboxPathService {
     }
     final homeDrive = env['HOMEDRIVE'];
     final homePath = env['HOMEPATH'];
-    if (homeDrive != null && homePath != null && homeDrive.isNotEmpty && homePath.isNotEmpty) {
+    if (homeDrive != null &&
+        homePath != null &&
+        homeDrive.isNotEmpty &&
+        homePath.isNotEmpty) {
       return '$homeDrive$homePath';
     }
     return Directory.current.path;

@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:cpaclient/features/settings/settings_page.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 class CpaClientApp extends StatefulWidget {
   const CpaClientApp({super.key, required this.initialThemeMode});
@@ -11,9 +14,32 @@ class CpaClientApp extends StatefulWidget {
 }
 
 class _CpaClientAppState extends State<CpaClientApp> {
-  static const _fontFamily = 'NotoSansSC';
-
   late ThemeMode _themeMode;
+
+  List<String> get _fontFallbacks {
+    if (Platform.isWindows) {
+      return const <String>[
+        '微软雅黑',
+        'Microsoft YaHei',
+        'Segoe UI',
+        'sans-serif',
+      ];
+    }
+    if (Platform.isMacOS || Platform.isIOS) {
+      return const <String>['PingFang SC', 'Helvetica Neue', 'sans-serif'];
+    }
+    if (Platform.isAndroid) {
+      return const <String>['Noto Sans CJK SC', 'sans-serif'];
+    }
+    if (Platform.isLinux) {
+      return const <String>[
+        'Noto Sans CJK SC',
+        'WenQuanYi Zen Hei',
+        'sans-serif'
+      ];
+    }
+    return const <String>['sans-serif'];
+  }
 
   @override
   void initState() {
@@ -40,41 +66,53 @@ class _CpaClientAppState extends State<CpaClientApp> {
       primarySwatch: Colors.indigo,
       colorScheme: colorScheme,
       useMaterial3: true,
-      fontFamily: _fontFamily,
     );
 
     final primaryTextColor = colorScheme.onSurface;
     final secondaryTextColor = colorScheme.onSurfaceVariant;
+    final fontFallbacks = _fontFallbacks;
 
-    final textTheme = base.textTheme
-        .apply(bodyColor: primaryTextColor, displayColor: primaryTextColor)
-        .copyWith(
-          titleSmall: base.textTheme.titleSmall?.copyWith(
-            fontSize: 14,
-            fontWeight: FontWeight.w800,
-            color: primaryTextColor,
-          ),
-          labelMedium: base.textTheme.labelMedium?.copyWith(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: secondaryTextColor,
-          ),
-          labelSmall: base.textTheme.labelSmall?.copyWith(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: secondaryTextColor,
-          ),
-          bodyMedium: base.textTheme.bodyMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-            fontSize: 14,
-            color: primaryTextColor,
-          ),
-          bodySmall: base.textTheme.bodySmall?.copyWith(
-            fontWeight: FontWeight.w600,
-            fontSize: 12,
-            color: primaryTextColor,
-          ),
-        );
+    final baseGoogleTextTheme = GoogleFonts.notoSansScTextTheme(base.textTheme)
+        .apply(bodyColor: primaryTextColor, displayColor: primaryTextColor);
+
+    final textTheme = baseGoogleTextTheme.copyWith(
+      titleSmall: baseGoogleTextTheme.titleSmall?.copyWith(
+        fontSize: 14,
+        fontWeight: FontWeight.w700,
+        color: primaryTextColor,
+        fontFamilyFallback: fontFallbacks,
+      ),
+      labelMedium: baseGoogleTextTheme.labelMedium?.copyWith(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: secondaryTextColor,
+        fontFamilyFallback: fontFallbacks,
+      ),
+      labelSmall: baseGoogleTextTheme.labelSmall?.copyWith(
+        fontSize: 11,
+        fontWeight: FontWeight.w500,
+        color: secondaryTextColor,
+        fontFamilyFallback: fontFallbacks,
+      ),
+      bodyLarge: baseGoogleTextTheme.bodyLarge?.copyWith(
+        fontSize: 13,
+        fontWeight: FontWeight.w400,
+        color: primaryTextColor,
+        fontFamilyFallback: fontFallbacks,
+      ),
+      bodyMedium: baseGoogleTextTheme.bodyMedium?.copyWith(
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: primaryTextColor,
+        fontFamilyFallback: fontFallbacks,
+      ),
+      bodySmall: baseGoogleTextTheme.bodySmall?.copyWith(
+        fontSize: 12,
+        fontWeight: FontWeight.w400,
+        color: primaryTextColor,
+        fontFamilyFallback: fontFallbacks,
+      ),
+    );
 
     final inputDecorationTheme = InputDecorationTheme(
       filled: true,
