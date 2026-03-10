@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -70,15 +71,13 @@ def resolve_platform(arch: str) -> tuple[str, str, list[Path], str]:
             Path("build/windows/x64/runner/Release"),
             Path("build/windows/runner/Release"),
         ]
-        artifact = f"windows_{arch}.zip"
-        return target, flutter_target, candidates, artifact
+        return target, flutter_target, candidates, "zip"
 
     if system == "Linux":
         target = "linux"
         flutter_target = "linux"
         build_dir = Path("build/linux/x64/release/bundle") if arch == "amd64" else Path("build/linux/arm64/release/bundle")
-        artifact = f"linux_{arch}.tar.gz"
-        return target, flutter_target, [build_dir], artifact
+        return target, flutter_target, [build_dir], "tar.gz"
 
     if system == "Darwin":
         target = "darwin"
@@ -87,8 +86,7 @@ def resolve_platform(arch: str) -> tuple[str, str, list[Path], str]:
             Path("build/macos/Build/Products/Release/cpaclient.app"),
             Path("build/macos/Build/Products/Release/Runner.app"),
         ]
-        artifact = f"darwin_{arch}.tar.gz"
-        return target, flutter_target, candidates, artifact
+        return target, flutter_target, candidates, "tar.gz"
 
     raise SystemExit(f"Unsupported host OS: {system}")
 
@@ -101,12 +99,21 @@ def resolve_build_dir(candidates: list[Path]) -> Path:
     raise SystemExit(f"Build output not found. Checked candidates:\n{checked}")
 
 
-def package_windows(build_dir: Path, output_dir: Path, arch: str) -> Path:
+def build_artifact_filename(target: str, arch: str, extension: str, build_name: str, build_number: str) -> str:
+    version_suffix = ""
+    if build_name and build_number:
+        version_suffix = f"_v{build_name}_{build_number}"
+    elif build_name:
+        version_suffix = f"_v{build_name}"
+
+    return f"{target}_{arch}{version_suffix}.{extension}"
+
+
+def package_windows(build_dir: Path, artifact_path: Path) -> Path:
     exe_candidates = sorted(build_dir.glob("*.exe"))
     if not exe_candidates:
         raise SystemExit(f"No executable found in build output: {build_dir.as_posix()}")
 
-    artifact_path = output_dir / f"windows_{arch}.zip"
     if artifact_path.exists():
         artifact_path.unlink()
 
@@ -137,12 +144,88 @@ def package_targz(build_dir: Path, artifact_path: Path) -> None:
                 tar.add(child, arcname=child.name)
 
 
+def _resolve_latest_tag_version() -> tuple[str, str] | None:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "for-each-ref",
+                "--sort=-version:refname",
+                "--format=%(refname:short)",
+                "refs/tags/v*",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    for raw in result.stdout.splitlines():
+        tag = raw.strip()
+        if not tag:
+            continue
+
+        match = re.match(r"^v(\d+\.\d+\.\d+)(?:[+_](\d+))?$", tag)
+        if not match:
+            continue
+
+        build_name = match.group(1)
+        build_number = match.group(2) or "1"
+        return build_name, build_number
+
+    return None
+
+
+def _resolve_pubspec_version() -> tuple[str, str] | None:
+    pubspec = Path("pubspec.yaml")
+    if not pubspec.is_file():
+        return None
+
+    for line in pubspec.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^version:\s*(\d+\.\d+\.\d+)(?:\+(\d+))?\s*$", line.strip())
+        if match:
+            return match.group(1), match.group(2) or "1"
+
+    return None
+
+
+def _sync_tags_from_remote() -> bool:
+    try:
+        remotes = subprocess.run(
+            ["git", "remote"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+    remote_list = [item.strip() for item in remotes.stdout.splitlines() if item.strip()]
+    if not remote_list:
+        return False
+
+    remote = "origin" if "origin" in remote_list else remote_list[0]
+    try:
+        subprocess.run(["git", "fetch", remote, "--tags"], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build and package the current host desktop target.",
     )
     parser.add_argument("--build-name", default="", help="Flutter build name")
     parser.add_argument("--build-number", default="", help="Flutter build number")
+    parser.add_argument(
+        "--use-latest-tag-version",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use latest git tag as version (default: true). Use --no-use-latest-tag-version to disable",
+    )
     parser.add_argument("--arch", choices=["auto", "amd64", "arm64"], default="auto", help="Package arch label")
     parser.add_argument("--skip-build", action="store_true", help="Only package existing build output")
     parser.add_argument("--output-dir", default="release", help="Output directory")
@@ -164,8 +247,36 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    if args.use_latest_tag_version:
+        tag_version = _resolve_latest_tag_version()
+
+        if not tag_version:
+            if _sync_tags_from_remote():
+                tag_version = _resolve_latest_tag_version()
+
+        if tag_version:
+            tag_build_name, tag_build_number = tag_version
+            if not args.build_name:
+                args.build_name = tag_build_name
+            if not args.build_number:
+                args.build_number = tag_build_number
+
+            print(f"Resolved version from latest tag: {args.build_name}_{args.build_number}")
+        else:
+            pubspec_version = _resolve_pubspec_version()
+            if pubspec_version:
+                pubspec_build_name, pubspec_build_number = pubspec_version
+                if not args.build_name:
+                    args.build_name = pubspec_build_name
+                if not args.build_number:
+                    args.build_number = pubspec_build_number
+                print(f"Fallback to pubspec version: {args.build_name}_{args.build_number}")
+            else:
+                raise SystemExit("No valid tag found after sync, and pubspec version is unavailable. Expected vMAJOR.MINOR.PATCH, vMAJOR.MINOR.PATCH+BUILD, or vMAJOR.MINOR.PATCH_BUILD")
+
     arch = detect_arch(args.arch)
-    target, flutter_target, candidates, artifact = resolve_platform(arch)
+    target, flutter_target, candidates, artifact_ext = resolve_platform(arch)
 
     if args.macos_sign_identity and target != "darwin":
         raise SystemExit("--macos-sign-identity is only supported on macOS")
@@ -250,11 +361,19 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    artifact_name = build_artifact_filename(
+        target=target,
+        arch=arch,
+        extension=artifact_ext,
+        build_name=args.build_name,
+        build_number=args.build_number,
+    )
+    artifact_path = output_dir / artifact_name
+
     if target == "windows":
-        artifact_path = package_windows(build_dir, output_dir, arch)
+        package_windows(build_dir, artifact_path)
         print(f"Packaged: {artifact_path.as_posix()}")
     else:
-        artifact_path = output_dir / artifact
         package_targz(build_dir, artifact_path)
         print(f"Packaged: {artifact_path.as_posix()}")
 

@@ -1,4 +1,7 @@
 class AppSettings {
+  static const String windowCloseActionMinimizeToTray = 'minimize_to_tray';
+  static const String windowCloseActionExitApp = 'exit_app';
+
   const AppSettings({
     required this.coreVersion,
     required this.githubToken,
@@ -10,6 +13,7 @@ class AppSettings {
     required this.keepGithubToken,
     required this.webdavAutoBackupEnabled,
     required this.webdavAutoBackupIntervalMinutes,
+    required this.windowCloseAction,
   });
 
   factory AppSettings.defaults() {
@@ -24,6 +28,7 @@ class AppSettings {
       keepGithubToken: true,
       webdavAutoBackupEnabled: false,
       webdavAutoBackupIntervalMinutes: 60,
+      windowCloseAction: windowCloseActionMinimizeToTray,
     );
   }
 
@@ -37,6 +42,7 @@ class AppSettings {
   final bool keepGithubToken;
   final bool webdavAutoBackupEnabled;
   final int webdavAutoBackupIntervalMinutes;
+  final String windowCloseAction;
 
   AppSettings copyWith({
     String? coreVersion,
@@ -49,6 +55,7 @@ class AppSettings {
     bool? keepGithubToken,
     bool? webdavAutoBackupEnabled,
     int? webdavAutoBackupIntervalMinutes,
+    String? windowCloseAction,
   }) {
     return AppSettings(
       coreVersion: coreVersion ?? this.coreVersion,
@@ -59,9 +66,11 @@ class AppSettings {
       webdavPassword: webdavPassword ?? this.webdavPassword,
       webuiSecretKey: webuiSecretKey ?? this.webuiSecretKey,
       keepGithubToken: keepGithubToken ?? this.keepGithubToken,
-      webdavAutoBackupEnabled: webdavAutoBackupEnabled ?? this.webdavAutoBackupEnabled,
-      webdavAutoBackupIntervalMinutes:
-          webdavAutoBackupIntervalMinutes ?? this.webdavAutoBackupIntervalMinutes,
+      webdavAutoBackupEnabled:
+          webdavAutoBackupEnabled ?? this.webdavAutoBackupEnabled,
+      webdavAutoBackupIntervalMinutes: webdavAutoBackupIntervalMinutes ??
+          this.webdavAutoBackupIntervalMinutes,
+      windowCloseAction: windowCloseAction ?? this.windowCloseAction,
     );
   }
 
@@ -77,6 +86,7 @@ class AppSettings {
       'keepGithubToken': keepGithubToken,
       'webdavAutoBackupEnabled': webdavAutoBackupEnabled,
       'webdavAutoBackupIntervalMinutes': webdavAutoBackupIntervalMinutes,
+      'windowCloseAction': windowCloseAction,
     };
   }
 
@@ -85,13 +95,26 @@ class AppSettings {
       coreVersion: (json['coreVersion'] as String?) ?? '6.8.47',
       githubToken: (json['githubToken'] as String?) ?? '',
       themeMode: (json['themeMode'] as String?) ?? 'system',
-      webdavUrl: (json['webdavUrl'] as String?) ?? 'https://dav.jianguoyun.com/dav',
+      webdavUrl:
+          (json['webdavUrl'] as String?) ?? 'https://dav.jianguoyun.com/dav',
       webdavUsername: (json['webdavUsername'] as String?) ?? '',
       webdavPassword: (json['webdavPassword'] as String?) ?? '',
       webuiSecretKey: (json['webuiSecretKey'] as String?) ?? '',
       keepGithubToken: (json['keepGithubToken'] as bool?) ?? true,
-      webdavAutoBackupEnabled: (json['webdavAutoBackupEnabled'] as bool?) ?? false,
-      webdavAutoBackupIntervalMinutes: (json['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
+      webdavAutoBackupEnabled:
+          (json['webdavAutoBackupEnabled'] as bool?) ?? false,
+      webdavAutoBackupIntervalMinutes:
+          (json['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
+      windowCloseAction: normalizeWindowCloseAction(
+        json['windowCloseAction'] as String?,
+      ),
     );
+  }
+
+  static String normalizeWindowCloseAction(String? value) {
+    if (value == windowCloseActionExitApp) {
+      return value!;
+    }
+    return windowCloseActionMinimizeToTray;
   }
 }

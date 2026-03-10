@@ -63,6 +63,7 @@ class AppSettingsService {
       'webdavAutoBackupEnabled': settings.webdavAutoBackupEnabled,
       'webdavAutoBackupIntervalMinutes':
           settings.webdavAutoBackupIntervalMinutes,
+      'windowCloseAction': settings.windowCloseAction,
       'secrets': encrypted,
     };
 
@@ -74,10 +75,16 @@ class AppSettingsService {
         (map['coreVersion'] as String?) ?? AppSettings.defaults().coreVersion;
     final themeMode =
         (map['themeMode'] as String?) ?? AppSettings.defaults().themeMode;
+    final windowCloseAction = AppSettings.normalizeWindowCloseAction(
+      map['windowCloseAction'] as String?,
+    );
     final secrets = map['secrets'];
     if (secrets is! Map<String, dynamic>) {
-      return AppSettings.defaults()
-          .copyWith(coreVersion: coreVersion, themeMode: themeMode);
+      return AppSettings.defaults().copyWith(
+        coreVersion: coreVersion,
+        themeMode: themeMode,
+        windowCloseAction: windowCloseAction,
+      );
     }
 
     try {
@@ -95,6 +102,7 @@ class AppSettingsService {
             (map['webdavAutoBackupEnabled'] as bool?) ?? false,
         webdavAutoBackupIntervalMinutes:
             (map['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
+        windowCloseAction: windowCloseAction,
       );
     } catch (_) {}
 
@@ -117,12 +125,16 @@ class AppSettingsService {
             (map['webdavAutoBackupEnabled'] as bool?) ?? false,
         webdavAutoBackupIntervalMinutes:
             (map['webdavAutoBackupIntervalMinutes'] as int?) ?? 60,
+        windowCloseAction: windowCloseAction,
       );
       await save(migrated);
       return migrated;
     } catch (_) {
-      return AppSettings.defaults()
-          .copyWith(coreVersion: coreVersion, themeMode: themeMode);
+      return AppSettings.defaults().copyWith(
+        coreVersion: coreVersion,
+        themeMode: themeMode,
+        windowCloseAction: windowCloseAction,
+      );
     }
   }
 

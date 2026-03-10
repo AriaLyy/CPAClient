@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:cpaclient/core/services/app_log_service.dart';
 import 'package:cpaclient/core/services/sandbox_config_service.dart';
-import 'package:path/path.dart' as p;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -25,6 +24,7 @@ class TrayService with TrayListener {
   final Future<void> Function() _onStopCore;
   final Future<void> Function() _onExit;
   final AppLogService _log;
+  int? _lastTrayIconMouseUpAtMs;
 
   Future<void> init() async {
     await _log.info('Tray init begin');
@@ -50,26 +50,24 @@ class TrayService with TrayListener {
   }
 
   String? _trayIconPath() {
-    final candidates = <String>[];
     if (Platform.isWindows) {
-      candidates.add('windows/runner/resources/app_icon.ico');
+      return 'windows/runner/resources/app_icon.ico';
     }
-    if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
-      candidates.add('macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png');
-      candidates.add('macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png');
-    }
-
-    for (final relativePath in candidates) {
-      final local = File(relativePath);
-      if (local.existsSync()) {
-        return local.absolute.path;
-      }
-      final fromCwd = File(p.join(Directory.current.path, relativePath));
-      if (fromCwd.existsSync()) {
-        return fromCwd.absolute.path;
-      }
+    if (Platform.isMacOS || Platform.isLinux) {
+      return 'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png';
     }
     return null;
+  }
+
+  @override
+  void onTrayIconMouseDown() {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final lastMs = _lastTrayIconMouseUpAtMs;
+    _lastTrayIconMouseUpAtMs = nowMs;
+    if (lastMs != null && nowMs - lastMs <= 500) {
+      unawaited(_log.info('Tray icon double click'));
+      unawaited(_onOpenSettings());
+    }
   }
 
   @override

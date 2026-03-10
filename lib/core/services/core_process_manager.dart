@@ -19,7 +19,8 @@ class CoreProcessManager {
     final config = await _paths.sandboxConfigFile();
 
     if (_process != null) {
-      await _log.info('Core process start requested while tracked process exists, stopping first');
+      await _log.info(
+          'Core process start requested while tracked process exists, stopping first');
       await stop();
     }
 
@@ -29,7 +30,8 @@ class CoreProcessManager {
       await _log.error('Core executable missing: $executable');
       throw Exception('Core executable not found: $executable');
     }
-    await _log.info('Core process start: exec=$executable config=${config.path}');
+    await _log
+        .info('Core process start: exec=$executable config=${config.path}');
     _process = await Process.start(
       executable,
       ['--config', config.path],
@@ -54,11 +56,12 @@ class CoreProcessManager {
     process.kill();
     try {
       await process.exitCode.timeout(const Duration(seconds: 5));
+      _process = null;
+      await _log.info('Core process stopped');
     } catch (e) {
       await _log.error('Core process stop timeout/failure', e);
+      rethrow;
     }
-    _process = null;
-    await _log.info('Core process stopped');
   }
 
   Future<void> _killStaleCoreProcesses({required String executablePath}) async {
@@ -66,7 +69,8 @@ class CoreProcessManager {
     try {
       if (Platform.isWindows) {
         await _log.info('Core stale cleanup: taskkill /IM $executableName');
-        await Process.run('taskkill', <String>['/F', '/IM', executableName, '/T']);
+        await Process.run(
+            'taskkill', <String>['/F', '/IM', executableName, '/T']);
       } else {
         await _log.info('Core stale cleanup: pkill -f $executablePath');
         await Process.run('pkill', <String>['-f', executablePath]);

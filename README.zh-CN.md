@@ -9,20 +9,22 @@ CPAClient 是一个 Flutter 桌面客户端，用于在本地管理并运行 [CL
 
 - [核心能力](#核心能力)
 - [界面与交互](#界面与交互)
-- [技术栈](#技术栈)
 - [支持平台](#支持平台)
-- [项目结构](#项目结构)
 - [快速开始开发](#快速开始开发)
-- [首次启动流程](#首次启动流程)
-- [数据与配置存储](#数据与配置存储)
 - [构建与发布](#构建与发布)
-- [测试与代码检查](#测试与代码检查)
-- [配置项说明](#配置项说明)
 - [安全说明](#安全说明)
 - [常见问题](#常见问题)
 - [相关项目](#相关项目)
+- [开源协议](#开源协议)
 
 ## 核心能力
+
+### 功能列表
+
+- 支持统计数据备份，重启核心也不会丢失统计数据
+- 支持 WebDAV 多端同步数据
+- 支持核心更新
+- 支持快速打开 WebUI
 
 - **一键准备核心环境**
   - 自动初始化 sandbox 目录与 `config.yaml`
@@ -55,12 +57,15 @@ CPAClient 是一个 Flutter 桌面客户端，用于在本地管理并运行 [CL
   - About（版本信息等）
 - 桌面窗口当前为固定尺寸（860 × 640），适合稳定的桌面运维场景。
 
-## 技术栈
+## 界面截图
 
-- Flutter（Material 3）
-- 桌面能力：`tray_manager`、`window_manager`、`launch_at_startup`、`url_launcher`
-- 网络与文件：`http`、`dio`、`archive`、`yaml`、`path_provider`
-- 加解密相关：`cryptography`
+### 日间模式
+
+![日间模式截图](docs/assets/日间截图.png)
+
+### 夜间模式
+
+![夜间模式截图](docs/assets/夜间截图.png)
 
 ## 支持平台
 
@@ -69,26 +74,6 @@ CPAClient 是一个 Flutter 桌面客户端，用于在本地管理并运行 [CL
 - Linux：`amd64`、`arm64`
 - macOS：`amd64`、`arm64`
 - Windows：`amd64`、`arm64`
-
-## 项目结构
-
-```text
-lib/
-  app/                      # 应用入口（主题 + MaterialApp）
-  core/
-    constants/              # 默认常量
-    models/                 # 设置模型 / GitHub release 模型
-    services/               # 启动、下载、进程、配置、路径、日志等服务
-  features/
-    settings/               # 设置页与控制器（主界面）
-    tray/                   # 系统托盘能力
-configs/
-  config.yaml               # 内置默认配置模板
-test/
-  core/services/            # 服务层测试
-.github/workflows/
-  release.yml               # 多平台桌面发布流水线
-```
 
 ## 快速开始（开发）
 
@@ -117,25 +102,16 @@ flutter run -d macos
 flutter run -d linux
 ```
 
-## 首次启动流程
+## 备份数据说明
 
-1. 应用自动创建 sandbox 数据目录。
-2. 如果核心二进制不存在，应用将按配置版本尝试下载。
-3. 使用本地 `config.yaml` 启动核心进程。
-4. 可从设置页或托盘直接打开 WebUI。
-
-> 若 GitHub API 请求受限（例如 403），可在设置页填写 GitHub Token 以提高请求额度。
-
-## 数据与配置存储
-
-CPAClient 通过 `path_provider` 将运行数据写入应用支持目录，主要包括：
-
-- `sandbox/bin/`（核心程序）
-- `sandbox/config/config.yaml`
-- `sandbox/app_settings.json`
-- `sandbox/app.log`
-
-可在设置页通过快捷按钮直接打开这些路径。
+- 当前支持通过 WebDAV 备份与还原的数据为：`sandbox/config/config.yaml`。
+- 在设置页的 **WebDAV** 分区可执行：
+  - 测试连接
+  - 手动备份
+  - 还原指定版本
+  - 开启自动备份（按分钟间隔）
+- 备份版本列表支持查看时间戳，并选择目标版本执行还原。
+- 建议先测试连接成功后再执行备份或还原。
 
 ## 构建与发布
 
@@ -157,6 +133,10 @@ python3 tool/package_local.py
 可选参数：
 
 - 构建版本：`--build-name`、`--build-number`
+- 默认使用最新 git tag 作为版本（如 `v1.2.3` / `v1.2.3+45` / `v1.2.3_45`）
+  - 当本地无 tag 时会自动执行一次 `git fetch <remote> --tags`
+  - 若仍无有效 tag，则回退使用 `pubspec.yaml` 版本
+- 禁用自动 tag 版本：`--no-use-latest-tag-version`
 - 仅打包不构建：`--skip-build`
 - 输出目录：`--output-dir`
 
@@ -166,34 +146,13 @@ macOS 本地签名：
 - 使用 ad-hoc 签名：`--macos-sign-identity "-"`
 - 可选权限文件：`--macos-entitlements path/to/entitlements.plist`
 
-默认输出到 `release/`，命名与 CI 保持一致：
+默认输出到 `release/`，压缩包命名会附带版本号：
 
-- Linux：`linux_<arch>.tar.gz`
-- macOS：`darwin_<arch>.tar.gz`
-- Windows：`windows_<arch>.exe`
+- Linux：`linux_<arch>_v<build-name>_<build-number>.tar.gz`
+- macOS：`darwin_<arch>_v<build-name>_<build-number>.tar.gz`
+- Windows：`windows_<arch>_v<build-name>_<build-number>.zip`
 
 说明：本地打包为“本机打本机”（Windows 打 Windows，macOS 打 macOS，Linux 打 Linux）。
-
-## 测试与代码检查
-
-```bash
-# 单元测试
-flutter test
-
-# 静态检查
-flutter analyze
-```
-
-## 配置项说明
-
-应用设置（`app_settings.json`）主要包括：
-
-- `coreVersion`：核心版本
-- `themeMode`：主题模式（`light` / `dark` / `system`）
-- `keepGithubToken`：是否保留 GitHub Token
-- `webdavAutoBackupEnabled`：是否启用自动备份
-- `webdavAutoBackupIntervalMinutes`：自动备份间隔（分钟）
-- `secrets`：敏感字段容器（如 GitHub Token、WebDAV 凭据、WebUI 密钥）
 
 ## 安全说明
 
@@ -213,3 +172,9 @@ flutter analyze
 
 - CLIProxyAPI：https://github.com/router-for-me/CLIProxyAPI
 - CPAClient：https://github.com/AriaLyy/CPAClient
+
+## 开源协议
+
+本项目使用 GNU General Public License v3.0（GPL-3.0）开源协议。
+版权所有（C）2026 AriaLyy。
+详细内容见 [LICENSE](LICENSE)。

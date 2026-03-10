@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cpaclient/core/models/app_settings.dart';
 import 'package:cpaclient/core/models/webdav_backup_version.dart';
 import 'package:cpaclient/core/services/app_services.dart';
 import 'package:cpaclient/features/settings/settings_controller.dart';
 import 'package:cpaclient/features/tray/tray_service.dart';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 enum _SettingsSection { core, security, preferences, webdav, about }
 
@@ -19,7 +21,7 @@ class SettingsPage extends StatefulWidget {
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
-class _SettingsPageState extends State<SettingsPage> {
+class _SettingsPageState extends State<SettingsPage> with WindowListener {
   final SettingsController _controller = SettingsController();
   TrayService? _trayService;
   _SettingsSection _activeSection = _SettingsSection.core;
@@ -32,6 +34,8 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _showWebuiPassword = false;
   bool _showWebdavPassword = false;
   bool _hoveringWebUiButton = false;
+  bool _isExiting = false;
+  String _appVersion = '未知';
   _SettingsSection? _hoveredSection;
   _SettingsSection? _focusedSection;
   _SettingsSection? _scrollTrackedSection;
@@ -66,6 +70,8 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    windowManager.addListener(this);
+    unawaited(windowManager.setPreventClose(true));
     _controller.addListener(_onChanged);
     _desktopScrollController.addListener(_syncActiveSectionFromScroll);
     _controller.load().whenComplete(() async {
@@ -78,6 +84,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     });
     _initTray();
+    _loadAppVersion();
   }
 
   Future<void> _initTray() async {
@@ -85,11 +92,29 @@ class _SettingsPageState extends State<SettingsPage> {
       sandboxConfig: AppServices.sandboxConfig,
       onOpenSettings: () async => _focusWindow(),
       onStopCore: _runStopCore,
-      onExit: _exitApp,
+      onExit: () => _exitApp(requestedByWindowClose: false),
       log: AppServices.log,
     );
     await tray.init();
     _trayService = tray;
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final version = info.version.trim();
+      final buildNumber = info.buildNumber.trim();
+      final resolved =
+          buildNumber.isEmpty ? version : '${version}_$buildNumber';
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _appVersion = resolved.isEmpty ? '未知' : resolved;
+      });
+    } catch (_) {
+      // keep default '未知'
+    }
   }
 
   Future<void> _focusWindow() async {
@@ -100,16 +125,48 @@ class _SettingsPageState extends State<SettingsPage> {
     await windowManager.focus();
   }
 
-  Future<void> _exitApp() async {
-    await _controller.disposeController();
+  Future<void> _exitApp({required bool requestedByWindowClose}) async {
+    if (_isExiting) {
+      return;
+    }
+    _isExiting = true;
+    try {
+      await _controller.disposeController();
+    } catch (e) {
+      _isExiting = false;
+      await AppServices.log.error(
+        'App exit aborted: shutdown failed, requestedByWindowClose=$requestedByWindowClose',
+        e,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('停止核心失败，应用未退出: $e')),
+        );
+      }
+      return;
+    }
+    await windowManager.setPreventClose(false);
     exit(0);
   }
 
   @override
+  Future<void> onWindowClose() async {
+    if (_controller.settings.windowCloseAction ==
+        AppSettings.windowCloseActionExitApp) {
+      await _exitApp(requestedByWindowClose: true);
+      return;
+    }
+    await windowManager.hide();
+  }
+
+  @override
   void dispose() {
+    windowManager.removeListener(this);
     _controller.removeListener(_onChanged);
     _desktopScrollController.removeListener(_syncActiveSectionFromScroll);
-    unawaited(_controller.disposeController());
+    if (!_isExiting) {
+      unawaited(_controller.disposeController());
+    }
     unawaited(_trayService?.dispose());
     _trayService = null;
     _controller.dispose();
@@ -1279,9 +1336,37 @@ class _SettingsPageState extends State<SettingsPage> {
               }));
             },
           ),
+          const SizedBox(height: _itemGap),
+          Text('关闭窗口行为', style: Theme.of(context).textTheme.labelMedium),
+          RadioListTile<String>(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            value: AppSettings.windowCloseActionMinimizeToTray,
+            groupValue: _controller.settings.windowCloseAction,
+            title: const Text('最小化到托盘'),
+            onChanged: (value) {
+              if (value == null) {
+                return;
+              }
+              unawaited(_run(() => _controller.saveWindowCloseAction(value)));
+            },
+          ),
+          RadioListTile<String>(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            value: AppSettings.windowCloseActionExitApp,
+            groupValue: _controller.settings.windowCloseAction,
+            title: const Text('直接退出应用'),
+            onChanged: (value) {
+              if (value == null) {
+                return;
+              }
+              unawaited(_run(() => _controller.saveWindowCloseAction(value)));
+            },
+          ),
           const SizedBox(height: 8),
           Text(
-            '主题会即时生效，并同步保存到本地设置。',
+            '主题会即时生效；关闭窗口行为会保存到本地设置。',
             style: _promptTextStyle(context),
           ),
         ],
@@ -1476,7 +1561,7 @@ class _SettingsPageState extends State<SettingsPage> {
               children: [
                 Text('版本信息', style: textTheme.labelMedium),
                 const SizedBox(height: 6),
-                _metricRow(label: '应用版本', value: '未知'),
+                _metricRow(label: '应用版本', value: _appVersion),
                 const SizedBox(height: 6),
                 _metricRow(
                     label: '核心版本', value: _controller.settings.coreVersion),

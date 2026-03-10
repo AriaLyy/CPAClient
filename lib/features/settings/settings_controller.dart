@@ -718,6 +718,16 @@ class SettingsController extends ChangeNotifier {
     return '主题已切换';
   }
 
+  Future<String> saveWindowCloseAction(String action) async {
+    final normalized = AppSettings.normalizeWindowCloseAction(action);
+    settings = settings.copyWith(windowCloseAction: normalized);
+    await AppServices.settings.save(settings);
+    notifyListeners();
+    return normalized == AppSettings.windowCloseActionExitApp
+        ? '关闭窗口时将直接退出应用'
+        : '关闭窗口时将最小化到托盘';
+  }
+
   Future<String> saveWebuiPassword(String value) async {
     final secret = value.trim();
     if (secret.isEmpty) {

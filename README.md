@@ -7,6 +7,13 @@ It provides a settings-first experience for downloading/updating the core binary
 
 ## Features
 
+### Feature List
+
+- Supports statistics data backup, and stats remain after core restarts
+- Supports multi-device data sync via WebDAV
+- Supports core updates
+- Supports quick access to WebUI
+
 - **One-click core bootstrap**
   - Initializes sandbox directories and `config.yaml`
   - Downloads the correct CLIProxyAPI release asset by OS/arch
@@ -29,11 +36,15 @@ It provides a settings-first experience for downloading/updating the core binary
   - Launch at startup toggle
   - Light / Dark / System theme
 
-## Tech Stack
+## Screenshots
 
-- Flutter (Material 3)
-- Desktop plugins: `tray_manager`, `window_manager`, `launch_at_startup`, `url_launcher`
-- Networking/files: `http`, `dio`, `archive`, `yaml`, `path_provider`
+### Light Mode
+
+![Light mode screenshot](docs/assets/日间截图.png)
+
+### Dark Mode
+
+![Dark mode screenshot](docs/assets/夜间截图.png)
 
 ## Supported Platforms
 
@@ -43,24 +54,6 @@ Current release workflow builds:
 - Linux: `amd64`, `arm64`
 - macOS: `amd64`, `arm64`
 - Windows: `amd64`, `arm64`
-
-## Project Structure
-
-```text
-lib/
-  app/                      # App root (theme + MaterialApp)
-  core/
-    constants/              # Default constants
-    models/                 # App settings / GitHub release models
-    services/               # Startup, downloader, process manager, config/path/log services
-  features/
-    settings/               # Settings page + controller (main UI)
-    tray/                   # System tray integration
-configs/
-  config.yaml               # Bundled default config template
-.github/workflows/
-  release.yml               # Multi-platform desktop release pipeline
-```
 
 ## Quick Start (Development)
 
@@ -89,23 +82,16 @@ flutter run -d macos
 flutter run -d linux
 ```
 
-## First Launch Flow
+## Backup Data
 
-1. App creates sandbox data automatically.
-2. If core binary is missing, app requires a GitHub token and downloads core release asset.
-3. App starts core process with local `config.yaml`.
-4. You can open WebUI from Settings or Tray.
-
-## Data & Config Storage
-
-CPAClient stores runtime data under the app support directory (via `path_provider`), including:
-
-- `sandbox/bin/` (core binary)
-- `sandbox/config/config.yaml`
-- `sandbox/app_settings.json`
-- `sandbox/app.log`
-
-Use the Settings shortcuts to open these paths directly.
+- WebDAV backup/restore currently covers: `sandbox/config/config.yaml`.
+- In the **WebDAV** section of Settings, you can:
+  - Test connection
+  - Run manual backup
+  - Restore a selected backup version
+  - Enable automatic backup (minute-based interval)
+- Backup version history includes timestamps so you can pick a specific restore point.
+- It is recommended to run connection test successfully before backup/restore.
 
 ## Build & Release
 
@@ -127,6 +113,10 @@ python3 tool/package_local.py
 Optional arguments:
 
 - build version: `--build-name`, `--build-number`
+- use latest git tag version by default (e.g. `v1.2.3` / `v1.2.3+45` / `v1.2.3_45`)
+  - automatically runs `git fetch <remote> --tags` once when local tags are missing
+  - falls back to `pubspec.yaml` version if still no valid tag is found
+- disable auto tag version: `--no-use-latest-tag-version`
 - package only: `--skip-build`
 - output folder: `--output-dir`
 
@@ -136,11 +126,11 @@ macOS local signing:
 - ad-hoc signing: `--macos-sign-identity "-"`
 - optional entitlements: `--macos-entitlements path/to/entitlements.plist`
 
-Output artifacts are written to `release/` by default and follow CI naming:
+Output artifacts are written to `release/` by default and include version suffix:
 
-- Linux: `linux_<arch>.tar.gz`
-- macOS: `darwin_<arch>.tar.gz`
-- Windows: `windows_<arch>.exe`
+- Linux: `linux_<arch>_v<build-name>_<build-number>.tar.gz`
+- macOS: `darwin_<arch>_v<build-name>_<build-number>.tar.gz`
+- Windows: `windows_<arch>_v<build-name>_<build-number>.zip`
 
 Note: local packaging is host-native (Windows builds Windows, macOS builds macOS, Linux builds Linux).
 
@@ -160,3 +150,9 @@ Note: local packaging is host-native (Windows builds Windows, macOS builds macOS
 
 - CLIProxyAPI: https://github.com/router-for-me/CLIProxyAPI
 - CPAClient: https://github.com/AriaLyy/CPAClient
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
+Copyright (C) 2026 AriaLyy.
+See [LICENSE](LICENSE) for details.
