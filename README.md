@@ -1,158 +1,118 @@
 # CPAClient
 
-[简体中文](README.zh-CN.md)
+[English](README.zh-CN.md)
 
-CPAClient is a Flutter desktop client that manages and runs [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) locally.
-It provides a settings-first experience for downloading/updating the core binary, managing WebUI access, and synchronizing `config.yaml` via WebDAV.
+CPAClient 是一个面向日常使用的桌面客户端，用于图形化管理并运行 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)。
 
-## Features
+> 目标：把“下载核心 / 更新核心 / 管理配置 / WebDAV 同步 / 托盘常驻”做成开箱即用的桌面体验。
 
-### Feature List
+---
 
-- Supports statistics data backup, and stats remain after core restarts
-- Supports multi-device data sync via WebDAV
-- Supports core updates
-- Supports quick access to WebUI
+## 功能总览（重点）
 
-- **One-click core bootstrap**
-  - Initializes sandbox directories and `config.yaml`
-  - Downloads the correct CLIProxyAPI release asset by OS/arch
-  - Starts the core process automatically
-- **Core management UI**
-  - Select recent core versions from GitHub releases
-  - Update/restart core
-  - Open WebUI directly (`http://127.0.0.1:<port>/management.html#/login`)
-  - Quick-open `config.yaml`, config directory, and sandbox directory
-- **Security & access settings**
-  - Save GitHub token (for release API access / rate-limit avoidance)
-  - Save WebUI password (`remote-management.secret-key`)
-- **WebDAV sync**
-  - Save WebDAV endpoint/credentials
-  - Test connection
-  - Backup and restore `config.yaml`
-  - Visual sync status (idle/running/success/failure)
-- **Desktop integration**
-  - Tray menu: WebUI / Settings / Exit
-  - Launch at startup toggle
-  - Light / Dark / System theme
+### 核心管理
+- ✅ 一键初始化运行环境（sandbox + config）
+- ✅ 自动下载并启动核心
+- ✅ 核心版本切换、更新、重启、停止
+- ✅ 支持统计数据恢复，核心重启后统计数据不丢失
+- ✅ 异常时输出日志路径，便于排查
 
-## Screenshots
+### 配置与同步
+- ✅ WebDAV 连接测试
+- ✅ 配置一键备份 / 一键恢复
+- ✅ 自动备份（按时间间隔）
+- ✅ 统计数据支持通过 WebDAV 多端同步
 
-### Light Mode
+### 桌面体验
+- ✅ 托盘常驻（设置 / 停止核心 / 退出）
+- ✅ 关闭窗口行为可配置：
+  - 最小化到托盘
+  - 直接退出（先停核心，避免残留进程）
+- ✅ 开机自启动
+- ✅ 主题切换（浅色 / 深色 / 跟随系统）
 
-![Light mode screenshot](docs/assets/light-mode.png)
+### 快捷入口
+- ✅ 一键打开 WebUI
+- ✅ 一键打开 `config.yaml`
+- ✅ 一键打开配置目录和 sandbox 目录
 
-### Dark Mode
+---
 
-![Dark mode screenshot](docs/assets/dark-mode.png)
+## 界面截图
 
-## Supported Platforms
+### 日间模式
+![日间模式截图](docs/assets/light-mode.png)
 
-Runtime support follows Flutter desktop targets and the bundled core binary format.
-Current release workflow builds:
+### 夜间模式
+![夜间模式截图](docs/assets/dark-mode.png)
 
-- Linux: `amd64`, `arm64`
-- macOS: `amd64`, `arm64`
-- Windows: `amd64`, `arm64`
+---
 
-## Quick Start (Development)
+## 使用者快速上手
 
-### 1) Prerequisites
+### 1. 下载
+从 Releases 下载对应系统版本：
+- https://github.com/AriaLyy/CPAClient/releases
 
-- Flutter SDK (project currently uses stable `3.35.5` in CI)
-- Dart SDK compatible with `sdk: ^3.6.2`
-- Platform-specific desktop toolchain:
-  - **Windows**: Visual Studio C++ desktop workload
-  - **macOS**: Xcode command line tools
-  - **Linux**: `clang`, `cmake`, `ninja-build`, `pkg-config`, `libgtk-3-dev`, and appindicator dev package
+### 2. 启动
+首次启动会自动执行核心准备流程（初始化、下载、启动）。
 
-### 2) Install dependencies
+### 3. 建议先配置
+- GitHub Token（避免下载限流）
+- WebUI 密钥
+- WebDAV 信息（如需备份/同步）
+- 关闭窗口行为（托盘最小化或直接退出）
+
+---
+
+## 推荐使用方式
+
+- **日常**：关闭窗口 -> 最小化到托盘，后台持续可用
+- **彻底退出**：托盘点“退出”或设置“关闭窗口直接退出”
+- 退出前会先停止核心，避免后台残留
+
+---
+
+## 常见问题
+
+### 下载核心时报 403
+请先配置 GitHub Token。
+
+### WebUI 打不开
+确认核心是否运行、端口是否正确；查看 `sandbox/app.log`。
+
+### WebDAV 失败
+先测试连接，再检查 URL/账号/密码（URL 需 `https://` 且不要以 `/` 结尾）。
+
+---
+
+## 支持平台
+
+- Windows: `amd64`、`arm64`
+- macOS: `amd64`、`arm64`
+- Linux: `amd64`、`arm64`
+
+---
+
+## 开发者（可选）
 
 ```bash
 flutter pub get
-```
-
-### 3) Run desktop app
-
-```bash
 flutter run -d windows
-# or
-flutter run -d macos
-# or
-flutter run -d linux
+# 或 macos / linux
 ```
 
-## Backup Data
-
-- WebDAV backup/restore currently covers: `sandbox/config/config.yaml`.
-- In the **WebDAV** section of Settings, you can:
-  - Test connection
-  - Run manual backup
-  - Restore a selected backup version
-  - Enable automatic backup (minute-based interval)
-- Backup version history includes timestamps so you can pick a specific restore point.
-- It is recommended to run connection test successfully before backup/restore.
-
-## Build & Release
-
-Tag-based release pipeline is defined in `.github/workflows/release.yml`:
-
-- Trigger: push tag matching `v*`
-- Matrix build across Linux/macOS/Windows and amd64/arm64 variants
-- Packages artifacts (`.tar.gz` for Linux/macOS, direct `.exe` for Windows)
-- Uploads assets to GitHub Release for the tag
-
-## Local Packaging
-
-Use the Python script to package on the current host OS:
+本地打包：
 
 ```bash
 python3 tool/package_local.py
 ```
 
-Optional arguments:
+---
 
-- build version: `--build-name`, `--build-number`
-- use latest git tag version by default (e.g. `v1.2.3` / `v1.2.3+45` / `v1.2.3_45`)
-  - automatically runs `git fetch <remote> --tags` once when local tags are missing
-  - falls back to `pubspec.yaml` version if still no valid tag is found
-- disable auto tag version: `--no-use-latest-tag-version`
-- package only: `--skip-build`
-- output folder: `--output-dir`
-
-macOS local signing:
-
-- sign app bundle: `--macos-sign-identity "Developer ID Application: ..."`
-- ad-hoc signing: `--macos-sign-identity "-"`
-- optional entitlements: `--macos-entitlements path/to/entitlements.plist`
-
-Output artifacts are written to `release/` by default and include version suffix:
-
-- Linux: `linux_<arch>_v<build-name>_<build-number>.tar.gz`
-- macOS: `darwin_<arch>_v<build-name>_<build-number>.tar.gz`
-- Windows: `windows_<arch>_v<build-name>_<build-number>.zip`
-
-Note: local packaging is host-native (Windows builds Windows, macOS builds macOS, Linux builds Linux).
-
-## Security Notes
-
-- Keep your GitHub token and WebDAV credentials private.
-- `config.yaml` may contain sensitive keys; avoid exposing or committing local runtime copies.
-- Prefer localhost-only management unless you understand remote exposure risks.
-
-## Troubleshooting
-
-- **403 when fetching releases**: configure GitHub token in Settings.
-- **Core update failed**: check app log path shown in UI message.
-- **WebDAV backup/restore failed**: verify URL/credentials and test connection first.
-
-## Related Projects
-
+## 相关项目
 - CLIProxyAPI: https://github.com/router-for-me/CLIProxyAPI
 - CPAClient: https://github.com/AriaLyy/CPAClient
 
-## License
-
-This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
-Copyright (C) 2026 AriaLyy.
-See [LICENSE](LICENSE) for details.
+## 协议
+GPL-3.0，详见 [LICENSE](LICENSE)。
