@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:archive/archive.dart';
 import 'package:cpaclient/core/constants/core_defaults.dart';
 import 'package:cpaclient/core/models/webdav_backup_version.dart';
 import 'package:cpaclient/core/services/app_log_service.dart';
@@ -59,7 +58,10 @@ class WebdavService {
   final ManagementAccessService _managementAccess;
   final CoreProcessManager _process;
 
-  bool _webdavBackupInProgress = false;
+  bool _webdavSyncInProgress = false;
+  static const int _usageVersionProbeLimit = 5;
+  DateTime? _webdavBlockedUntilUtc;
+  int _webdavBlockedCooldownMinutes = 0;
 
   String normalizeUrl(String inputUrl) {
     final trimmed = inputUrl.trim();
@@ -79,6 +81,10 @@ class WebdavService {
       throw Exception('请先填写 WebDAV 地址');
     }
     final normalizedUrl = normalizeUrl(inputUrl);
+    final cooldownMessage = _currentCooldownMessage();
+    if (cooldownMessage != null) {
+      throw Exception(cooldownMessage);
+    }
     try {
       await _log.info(
         'WebDAV test start: url=$normalizedUrl user=${username.trim()}',
@@ -90,8 +96,10 @@ class WebdavService {
         debug: true,
       );
       await client.ping();
+      _resetBlockedCooldownState();
       await _log.info('WebDAV test success: url=$normalizedUrl');
     } catch (e) {
+      _markBlockedCooldownIfNeeded(e);
       await _log.error(
           'WebDAV test failed: url=$normalizedUrl', _formatDioError(e));
       rethrow;
@@ -107,14 +115,20 @@ class WebdavService {
     required bool isCoreRunning,
     required bool isAuto,
   }) async {
-    if (_webdavBackupInProgress) {
-      const msg = '已有备份任务正在执行，已跳过';
+    if (_webdavSyncInProgress) {
+      const msg = '已有备份/还原任务正在执行，已跳过';
       await _log.info('WebDAV backup skipped: in-progress, isAuto=$isAuto');
       return msg;
     }
 
+    final cooldownMessage = _currentCooldownMessage();
+    if (cooldownMessage != null) {
+      await _log.info('WebDAV backup skipped: $cooldownMessage');
+      return cooldownMessage;
+    }
+
     final normalizedUrl = normalizeUrl(url);
-    _webdavBackupInProgress = true;
+    _webdavSyncInProgress = true;
     try {
       final cfg = await _sandboxConfig.ensureSandboxConfig();
       final authDir = await _sandboxConfig.readAuthDir();
@@ -131,7 +145,8 @@ class WebdavService {
       final versionId = newBackupVersionId();
       final versionRoot =
           '${CoreDefaults.webdavBackupVersionsDirName}/$versionId';
-      final remoteArchivePath = '$versionRoot/backup.tar.gz';
+      final remoteArchivePath =
+          '$versionRoot/${CoreDefaults.webdavBackupArchiveName}';
 
       await _log.info(
         'WebDAV backup start: url=$normalizedUrl version=$versionId local=${cfg.path} authDir=${authRoot.path} count=${authJsonFiles.length} usage=$usageJsonPath isAuto=$isAuto',
@@ -168,16 +183,18 @@ class WebdavService {
         password: password,
       );
       final msgBase =
-          '已备份压缩包版本 $versionId（backup.tar.gz，最多保留 ${CoreDefaults.webdavBackupMaxVersions} 个）';
+          '已备份压缩包版本 $versionId（${CoreDefaults.webdavBackupArchiveName}，最多保留 ${CoreDefaults.webdavBackupMaxVersions} 个）';
       final msg = cleanupWarning == null ? msgBase : '$msgBase；$cleanupWarning';
+      _resetBlockedCooldownState();
       await _log.info('WebDAV backup success: $msg, isAuto=$isAuto');
       return msg;
     } catch (e) {
+      _markBlockedCooldownIfNeeded(e);
       await _log.error(
           'WebDAV backup failed, isAuto=$isAuto', _formatDioError(e));
       rethrow;
     } finally {
-      _webdavBackupInProgress = false;
+      _webdavSyncInProgress = false;
     }
   }
 
@@ -189,14 +206,20 @@ class WebdavService {
     required String defaultWebuiPassword,
     required bool isCoreRunning,
   }) async {
-    if (_webdavBackupInProgress) {
-      const msg = '已有备份任务正在执行，已跳过';
+    if (_webdavSyncInProgress) {
+      const msg = '已有备份/还原任务正在执行，已跳过';
       await _log.info('WebDAV usage-only backup skipped: in-progress');
       return msg;
     }
 
+    final cooldownMessage = _currentCooldownMessage();
+    if (cooldownMessage != null) {
+      await _log.info('WebDAV usage-only backup skipped: $cooldownMessage');
+      return cooldownMessage;
+    }
+
     final normalizedUrl = normalizeUrl(url);
-    _webdavBackupInProgress = true;
+    _webdavSyncInProgress = true;
     try {
       final usageJsonPath = await _resolveLocalUsageJsonPath();
       await _exportUsageJsonSnapshot(
@@ -207,11 +230,9 @@ class WebdavService {
         trigger: 'webdav-backup-usage-only',
       );
       final versionId = newBackupVersionId();
-      final versionRoot =
-          '${CoreDefaults.webdavBackupVersionsDirName}/$versionId';
+      final versionRoot = '${CoreDefaults.webdavUsageSyncDirName}/$versionId';
       final remoteArchivePath =
           '$versionRoot/${CoreDefaults.webdavUsageArchiveName}';
-
       await _log.info(
         'WebDAV usage-only backup start: url=$normalizedUrl version=$versionId usage=$usageJsonPath',
       );
@@ -240,15 +261,23 @@ class WebdavService {
         }
       }
 
-      final msg =
-          '已备份 usage 压缩包版本 $versionId（${CoreDefaults.webdavUsageArchiveName}）';
+      final cleanupWarning = await _cleanupOldWebdavUsageSyncVersions(
+        url: normalizedUrl,
+        username: username,
+        password: password,
+      );
+      final msgBase =
+          '已备份 usage 压缩包版本 $versionId（${CoreDefaults.webdavUsageArchiveName}，最多保留 ${CoreDefaults.webdavUsageSyncMaxVersions} 个）';
+      final msg = cleanupWarning == null ? msgBase : '$msgBase；$cleanupWarning';
+      _resetBlockedCooldownState();
       await _log.info('WebDAV usage-only backup success: $msg');
       return msg;
     } catch (e) {
+      _markBlockedCooldownIfNeeded(e);
       await _log.error('WebDAV usage-only backup failed', _formatDioError(e));
       rethrow;
     } finally {
-      _webdavBackupInProgress = false;
+      _webdavSyncInProgress = false;
     }
   }
 
@@ -276,6 +305,34 @@ class WebdavService {
         .toList(growable: false);
   }
 
+  Future<String?> latestUsageVersionId({
+    required String url,
+    required String username,
+    required String password,
+  }) async {
+    final inputUrl = url.trim();
+    if (inputUrl.isEmpty) {
+      return null;
+    }
+
+    final cooldownMessage = _currentCooldownMessage();
+    if (cooldownMessage != null) {
+      await _log.info('WebDAV latest usage version skipped: $cooldownMessage');
+      return null;
+    }
+
+    final normalizedUrl = normalizeUrl(inputUrl);
+    final listing = await _listUsageVersionDirectories(
+      url: normalizedUrl,
+      username: username,
+      password: password,
+    );
+    if (listing.versions.isEmpty) {
+      return null;
+    }
+    return listing.versions.first;
+  }
+
   Future<bool> restoreUsage({
     required String url,
     required String username,
@@ -284,6 +341,17 @@ class WebdavService {
     required String settingsWebuiSecretKey,
     required String defaultWebuiPassword,
   }) async {
+    if (_webdavSyncInProgress) {
+      await _log.info('WebDAV restore usage skipped: in-progress');
+      return false;
+    }
+
+    final cooldownMessage = _currentCooldownMessage();
+    if (cooldownMessage != null) {
+      await _log.info('WebDAV restore usage skipped: $cooldownMessage');
+      return false;
+    }
+
     final normalizedUrl = normalizeUrl(url);
     final selectedVersionId = versionId.trim();
     if (selectedVersionId.isEmpty) {
@@ -293,11 +361,12 @@ class WebdavService {
     final remoteArchiveCandidates =
         buildRestoreUsageRemoteArchiveCandidates(selectedVersionId);
 
+    _webdavSyncInProgress = true;
     try {
       final cfg = await _sandboxConfig.ensureSandboxConfig();
       final usageJsonPath = await _resolveLocalUsageJsonPath();
       final localArchivePath =
-          p.join(cfg.parent.path, 'webdav_restore_backup_usage.tar.gz');
+          p.join(cfg.parent.path, 'webdav_restore_backup_usage.7z');
 
       final client = _createWebdavClient(
         url: normalizedUrl,
@@ -336,12 +405,16 @@ class WebdavService {
         secretKey: secretKey,
         trigger: 'latest-usage-restore',
       );
+      _resetBlockedCooldownState();
       await _log
           .info('WebDAV restore usage success: version=$selectedVersionId');
       return true;
     } catch (e) {
+      _markBlockedCooldownIfNeeded(e);
       await _log.error('WebDAV restore usage failed', _formatDioError(e));
       return false;
+    } finally {
+      _webdavSyncInProgress = false;
     }
   }
 
@@ -353,6 +426,10 @@ class WebdavService {
     required String settingsWebuiSecretKey,
     required String defaultWebuiPassword,
   }) async {
+    if (_webdavSyncInProgress) {
+      throw Exception('已有备份/还原任务正在执行，已跳过');
+    }
+
     final normalizedUrl = normalizeUrl(url);
     final selectedVersionId = versionId.trim();
     if (selectedVersionId.isEmpty) {
@@ -360,14 +437,15 @@ class WebdavService {
     }
 
     final remoteArchivePath =
-        '${CoreDefaults.webdavBackupVersionsDirName}/$selectedVersionId/backup.tar.gz';
+        '${CoreDefaults.webdavBackupVersionsDirName}/$selectedVersionId/${CoreDefaults.webdavBackupArchiveName}';
 
+    _webdavSyncInProgress = true;
     final cfg = await _sandboxConfig.ensureSandboxConfig();
     final authDir = await _sandboxConfig.readAuthDir();
     final authRoot = _paths.resolveAuthDir(authDir);
     final usageJsonPath = await _resolveLocalUsageJsonPath();
     final localArchivePath =
-        p.join(cfg.parent.path, 'webdav_restore_backup.tar.gz');
+        p.join(cfg.parent.path, 'webdav_restore_backup.7z');
 
     await _log.info(
       'WebDAV restore start: url=$normalizedUrl version=$selectedVersionId local=${cfg.path} restoreTo=${authRoot.path} usage=$usageJsonPath archive=$localArchivePath',
@@ -415,10 +493,10 @@ class WebdavService {
         trigger: 'manual-config-restore',
       );
       await _log.info(
-        'WebDAV restore success: version=$selectedVersionId archive=backup.tar.gz auth-json($restoredJsonCount)',
+        'WebDAV restore success: version=$selectedVersionId archive=${CoreDefaults.webdavBackupArchiveName} auth-json($restoredJsonCount)',
       );
       final msg =
-          '已解压还原版本 $selectedVersionId（backup.tar.gz，auth-json $restoredJsonCount 个），并重启核心';
+          '已解压还原版本 $selectedVersionId（${CoreDefaults.webdavBackupArchiveName}，auth-json $restoredJsonCount 个），并重启核心';
       return WebdavRestoreConfigResult(
         message: msg,
         restoredPort: restoredPort,
@@ -427,6 +505,8 @@ class WebdavService {
     } catch (e) {
       await _log.error('WebDAV restore failed', _formatDioError(e));
       rethrow;
+    } finally {
+      _webdavSyncInProgress = false;
     }
   }
 
@@ -469,13 +549,10 @@ class WebdavService {
   }
 
   List<String> buildRestoreUsageRemoteArchiveCandidates(String versionId) {
-    final versionRoot =
-        '${CoreDefaults.webdavBackupVersionsDirName}/$versionId';
+    final versionRoot = '${CoreDefaults.webdavUsageSyncDirName}/$versionId';
     final usageOnlyPath = '$versionRoot/${CoreDefaults.webdavUsageArchiveName}';
-    final fullBackupPath = '$versionRoot/backup.tar.gz';
     return <String>[
       ...buildRemotePathCandidates(usageOnlyPath),
-      ...buildRemotePathCandidates(fullBackupPath),
     ];
   }
 
@@ -491,16 +568,22 @@ class WebdavService {
         await Directory.systemTemp.createTemp('cpaclient_webdav_usage_backup_');
     final archivePath =
         p.join(tmpDir.path, CoreDefaults.webdavUsageArchiveName);
+    final stageDir = await Directory.systemTemp
+        .createTemp('cpaclient_webdav_usage_backup_stage_');
 
-    final archive = Archive()
-      ..addFile(ArchiveFile(
-          'usage.json', usageFile.lengthSync(), usageFile.readAsBytesSync()));
-
-    final tarData = TarEncoder().encode(archive);
-    final gzipData = GZipEncoder().encode(tarData);
-
-    await File(archivePath).writeAsBytes(gzipData, flush: true);
-    return archivePath;
+    try {
+      usageFile.copySync(p.join(stageDir.path, 'usage.json'));
+      await _run7zCommand(
+        args: <String>['a', '-t7z', '-y', archivePath, '.'],
+        workingDirectory: stageDir.path,
+        action: '创建 usage 备份压缩包',
+      );
+      return archivePath;
+    } finally {
+      if (stageDir.existsSync()) {
+        stageDir.deleteSync(recursive: true);
+      }
+    }
   }
 
   Future<String> buildBackupArchive({
@@ -519,28 +602,36 @@ class WebdavService {
 
     final tmpDir =
         await Directory.systemTemp.createTemp('cpaclient_webdav_backup_');
-    final archivePath = p.join(tmpDir.path, 'backup.tar.gz');
+    final archivePath =
+        p.join(tmpDir.path, CoreDefaults.webdavBackupArchiveName);
+    final stageDir =
+        await Directory.systemTemp.createTemp('cpaclient_webdav_backup_stage_');
 
-    final archive = Archive()
-      ..addFile(ArchiveFile(
-          'config.yaml', configFile.lengthSync(), configFile.readAsBytesSync()))
-      ..addFile(ArchiveFile(
-          'usage.json', usageFile.lengthSync(), usageFile.readAsBytesSync()));
+    try {
+      configFile.copySync(p.join(stageDir.path, 'config.yaml'));
+      usageFile.copySync(p.join(stageDir.path, 'usage.json'));
 
-    for (final jsonFile in localAuthJsonFiles) {
-      final name = p.basename(jsonFile.path);
-      final bytes = jsonFile.readAsBytesSync();
-      archive.addFile(
-        ArchiveFile(
-            '${CoreDefaults.webdavAuthJsonDirName}/$name', bytes.length, bytes),
+      final stagedAuthDir =
+          Directory(p.join(stageDir.path, CoreDefaults.webdavAuthJsonDirName));
+      for (final jsonFile in localAuthJsonFiles) {
+        if (!stagedAuthDir.existsSync()) {
+          stagedAuthDir.createSync(recursive: true);
+        }
+        final name = p.basename(jsonFile.path);
+        jsonFile.copySync(p.join(stagedAuthDir.path, name));
+      }
+
+      await _run7zCommand(
+        args: <String>['a', '-t7z', '-y', archivePath, '.'],
+        workingDirectory: stageDir.path,
+        action: '创建完整备份压缩包',
       );
+      return archivePath;
+    } finally {
+      if (stageDir.existsSync()) {
+        stageDir.deleteSync(recursive: true);
+      }
     }
-
-    final tarData = TarEncoder().encode(archive);
-    final gzipData = GZipEncoder().encode(tarData);
-
-    await File(archivePath).writeAsBytes(gzipData, flush: true);
-    return archivePath;
   }
 
   void extractUsageFromBackupArchive({
@@ -555,15 +646,10 @@ class WebdavService {
     final tmpDir =
         Directory.systemTemp.createTempSync('cpaclient_webdav_restore_usage_');
     try {
-      final compressed = archiveFile.readAsBytesSync();
-      final tarData = GZipDecoder().decodeBytes(compressed);
-      final archive = TarDecoder().decodeBytes(tarData);
-      for (final entry in archive.files.where((entry) => entry.isFile)) {
-        final outputPath = p.join(tmpDir.path, entry.name);
-        final outputFile = File(outputPath);
-        outputFile.parent.createSync(recursive: true);
-        outputFile.writeAsBytesSync(entry.content as List<int>, flush: true);
-      }
+      _run7zCommandSync(
+        args: <String>['x', '-y', localArchivePath, '-o${tmpDir.path}'],
+        action: '解压 usage 备份压缩包',
+      );
 
       final extractedUsage = File(p.join(tmpDir.path, 'usage.json'));
       if (!extractedUsage.existsSync()) {
@@ -591,15 +677,10 @@ class WebdavService {
     final tmpDir =
         Directory.systemTemp.createTempSync('cpaclient_webdav_restore_');
     try {
-      final compressed = archiveFile.readAsBytesSync();
-      final tarData = GZipDecoder().decodeBytes(compressed);
-      final archive = TarDecoder().decodeBytes(tarData);
-      for (final entry in archive.files.where((entry) => entry.isFile)) {
-        final outputPath = p.join(tmpDir.path, entry.name);
-        final outputFile = File(outputPath);
-        outputFile.parent.createSync(recursive: true);
-        outputFile.writeAsBytesSync(entry.content as List<int>, flush: true);
-      }
+      _run7zCommandSync(
+        args: <String>['x', '-y', localArchivePath, '-o${tmpDir.path}'],
+        action: '解压完整备份压缩包',
+      );
 
       final extractedConfig = File(p.join(tmpDir.path, 'config.yaml'));
       final extractedUsage = File(p.join(tmpDir.path, 'usage.json'));
@@ -793,6 +874,42 @@ class WebdavService {
     await _log.info('WebDAV restore restarting core completed');
   }
 
+  Future<void> _run7zCommand({
+    required List<String> args,
+    required String action,
+    String? workingDirectory,
+  }) async {
+    final result = await Process.run(
+      '7z',
+      args,
+      workingDirectory: workingDirectory,
+      runInShell: true,
+    );
+    if (result.exitCode != 0) {
+      throw Exception(
+        '$action失败: exit=${result.exitCode}, stdout=${result.stdout}, stderr=${result.stderr}',
+      );
+    }
+  }
+
+  void _run7zCommandSync({
+    required List<String> args,
+    required String action,
+    String? workingDirectory,
+  }) {
+    final result = Process.runSync(
+      '7z',
+      args,
+      workingDirectory: workingDirectory,
+      runInShell: true,
+    );
+    if (result.exitCode != 0) {
+      throw Exception(
+        '$action失败: exit=${result.exitCode}, stdout=${result.stdout}, stderr=${result.stderr}',
+      );
+    }
+  }
+
   Future<_WebdavVersionListingResult> _listVersionDirectories({
     required String url,
     required String username,
@@ -814,7 +931,8 @@ class WebdavService {
         if (parseBackupVersionTime(name) == null) {
           continue;
         }
-        final remoteArchivePath = '$root/$name/backup.tar.gz';
+        final remoteArchivePath =
+            '$root/$name/${CoreDefaults.webdavBackupArchiveName}';
         if (await _remoteFileExists(
             client: client, remotePath: remoteArchivePath)) {
           versions.add(name);
@@ -824,6 +942,88 @@ class WebdavService {
         ..sort((String a, String b) => b.compareTo(a));
       return _WebdavVersionListingResult(root: root, versions: sorted);
     } catch (e) {
+      if (_isRemoteNotFound(e)) {
+        return _WebdavVersionListingResult(
+            root: root, versions: const <String>[]);
+      }
+      rethrow;
+    }
+  }
+
+  Future<_WebdavVersionListingResult> _listUsageVersionDirectories({
+    required String url,
+    required String username,
+    required String password,
+  }) async {
+    final client = _createWebdavClient(
+      url: url,
+      username: username,
+      password: password,
+      debug: false,
+    );
+    final root = CoreDefaults.webdavUsageSyncDirName;
+
+    try {
+      final entries = await client.readDir(root);
+      final allVersionIds = <String>[];
+      for (final entry in entries.where((entry) => entry.isDir == true)) {
+        final name = p.basename((entry.path ?? '').replaceAll('\\', '/'));
+        if (parseBackupVersionTime(name) != null) {
+          allVersionIds.add(name);
+        }
+      }
+      final sortedCandidates = allVersionIds.toSet().toList(growable: false)
+        ..sort((String a, String b) => b.compareTo(a));
+
+      final versions = <String>[];
+      for (final name in sortedCandidates.take(_usageVersionProbeLimit)) {
+        final remoteArchivePath =
+            '$root/$name/${CoreDefaults.webdavUsageArchiveName}';
+        if (await _remoteFileExists(
+            client: client, remotePath: remoteArchivePath)) {
+          versions.add(name);
+          break;
+        }
+      }
+      _resetBlockedCooldownState();
+      return _WebdavVersionListingResult(root: root, versions: versions);
+    } catch (e) {
+      _markBlockedCooldownIfNeeded(e);
+      if (_isRemoteNotFound(e)) {
+        return _WebdavVersionListingResult(
+            root: root, versions: const <String>[]);
+      }
+      rethrow;
+    }
+  }
+
+  Future<_WebdavVersionListingResult> _listUsageVersionDirectoriesForCleanup({
+    required String url,
+    required String username,
+    required String password,
+  }) async {
+    final client = _createWebdavClient(
+      url: url,
+      username: username,
+      password: password,
+      debug: false,
+    );
+    final root = CoreDefaults.webdavUsageSyncDirName;
+
+    try {
+      final entries = await client.readDir(root);
+      final versions = <String>[];
+      for (final entry in entries.where((entry) => entry.isDir == true)) {
+        final name = p.basename((entry.path ?? '').replaceAll('\\', '/'));
+        if (parseBackupVersionTime(name) != null) {
+          versions.add(name);
+        }
+      }
+      final sorted = versions.toSet().toList(growable: false)
+        ..sort((String a, String b) => b.compareTo(a));
+      return _WebdavVersionListingResult(root: root, versions: sorted);
+    } catch (e) {
+      _markBlockedCooldownIfNeeded(e);
       if (_isRemoteNotFound(e)) {
         return _WebdavVersionListingResult(
             root: root, versions: const <String>[]);
@@ -861,6 +1061,38 @@ class WebdavService {
     } catch (e) {
       await _log.error('WebDAV backup cleanup failed', _formatDioError(e));
       return '清理旧版本失败（不影响本次备份）';
+    }
+  }
+
+  Future<String?> _cleanupOldWebdavUsageSyncVersions({
+    required String url,
+    required String username,
+    required String password,
+  }) async {
+    try {
+      final listing = await _listUsageVersionDirectoriesForCleanup(
+        url: url,
+        username: username,
+        password: password,
+      );
+      if (listing.versions.length <= CoreDefaults.webdavUsageSyncMaxVersions) {
+        return null;
+      }
+      final toDelete =
+          listing.versions.skip(CoreDefaults.webdavUsageSyncMaxVersions);
+      final client = _createWebdavClient(
+        url: url,
+        username: username,
+        password: password,
+        debug: false,
+      );
+      for (final version in toDelete) {
+        await client.removeAll('${listing.root}/$version');
+      }
+      return null;
+    } catch (e) {
+      await _log.error('WebDAV usage sync cleanup failed', _formatDioError(e));
+      return '清理旧 usage 版本失败（不影响本次备份）';
     }
   }
 
@@ -962,6 +1194,67 @@ class WebdavService {
     }
     final text = error.toString();
     return text.contains('status=404') || text.contains('404 Not Found');
+  }
+
+  bool _isBlockedTemporarilyError(Object error) {
+    if (error is DioException) {
+      final status = error.response?.statusCode;
+      final body = error.response?.data?.toString() ?? '';
+      if (status == 503 && body.contains('BlockedTemporarily')) {
+        return true;
+      }
+    }
+    final text = error.toString();
+    return text.contains('BlockedTemporarily') && text.contains('503');
+  }
+
+  void _markBlockedCooldownIfNeeded(Object error) {
+    if (!_isBlockedTemporarilyError(error)) {
+      return;
+    }
+    if (_webdavBlockedCooldownMinutes <= 0) {
+      _webdavBlockedCooldownMinutes = 10;
+    } else if (_webdavBlockedCooldownMinutes < 20) {
+      _webdavBlockedCooldownMinutes = 20;
+    } else {
+      _webdavBlockedCooldownMinutes = 30;
+    }
+    final until = DateTime.now()
+        .toUtc()
+        .add(Duration(minutes: _webdavBlockedCooldownMinutes));
+    _webdavBlockedUntilUtc = until;
+  }
+
+  void _resetBlockedCooldownState() {
+    _webdavBlockedUntilUtc = null;
+    _webdavBlockedCooldownMinutes = 0;
+  }
+
+  String? _currentCooldownMessage() {
+    final until = _webdavBlockedUntilUtc;
+    if (until == null) {
+      return null;
+    }
+    final now = DateTime.now().toUtc();
+    if (!now.isBefore(until)) {
+      _webdavBlockedUntilUtc = null;
+      return null;
+    }
+    final remainSeconds = until.difference(now).inSeconds;
+    return 'WebDAV 服务端限流中，请约 ${remainSeconds}s 后重试';
+  }
+
+  @visibleForTesting
+  String? latestUsageVersionIdFromCandidatesForTest(List<String> versionIds) {
+    final sorted = versionIds
+        .where((id) => parseBackupVersionTime(id) != null)
+        .toSet()
+        .toList(growable: false)
+      ..sort((String a, String b) => b.compareTo(a));
+    if (sorted.isEmpty) {
+      return null;
+    }
+    return sorted.first;
   }
 
   dynamic _createWebdavClient({

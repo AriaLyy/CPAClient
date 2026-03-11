@@ -67,6 +67,11 @@ class SandboxPathService {
     return File(p.join(config.path, 'usage.json'));
   }
 
+  Future<File> usageSyncMetaFile() async {
+    final config = await configDir();
+    return File(p.join(config.path, 'usage_sync_meta.json'));
+  }
+
   String homeDirPath() {
     final env = Platform.environment;
     final home = env['HOME'];

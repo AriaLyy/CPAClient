@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:archive/archive.dart';
 import 'package:cpaclient/core/constants/core_defaults.dart';
 import 'package:cpaclient/core/services/app_log_service.dart';
 import 'package:cpaclient/core/services/core_process_manager.dart';
@@ -38,36 +37,61 @@ void main() {
       const invalid = 'not-a-version';
       expect(service.formatBackupVersionLabel(invalid), invalid);
     });
+
+    test('latestUsageVersionIdFromCandidatesForTest returns latest valid id',
+        () {
+      final latest = service.latestUsageVersionIdFromCandidatesForTest([
+        '20260310T112233Z',
+        'not-a-version',
+        '20260311T010203Z',
+      ]);
+      expect(latest, '20260311T010203Z');
+    });
+
+    test('latestUsageVersionIdFromCandidatesForTest deduplicates and sorts',
+        () {
+      final latest = service.latestUsageVersionIdFromCandidatesForTest([
+        '20260311T010203Z',
+        '20260310T112233Z',
+        '20260311T010203Z',
+      ]);
+      expect(latest, '20260311T010203Z');
+    });
+
+    test('latestUsageVersionIdFromCandidatesForTest returns null on empty', () {
+      final latest = service.latestUsageVersionIdFromCandidatesForTest(
+        const <String>[],
+      );
+      expect(latest, isNull);
+    });
   });
 
   group('WebdavService remote path candidates', () {
     test('buildRemotePathCandidates returns both no-slash and slash forms', () {
       expect(
-        service.buildRemotePathCandidates('versions/abc/backup.tar.gz'),
-        ['versions/abc/backup.tar.gz', '/versions/abc/backup.tar.gz'],
+        service.buildRemotePathCandidates('versions/abc/backup.7z'),
+        ['versions/abc/backup.7z', '/versions/abc/backup.7z'],
       );
       expect(
-        service.buildRemotePathCandidates('/versions/abc/backup.tar.gz'),
-        ['versions/abc/backup.tar.gz', '/versions/abc/backup.tar.gz'],
+        service.buildRemotePathCandidates('/versions/abc/backup.7z'),
+        ['versions/abc/backup.7z', '/versions/abc/backup.7z'],
       );
     });
 
-    test('buildRestoreUsageRemoteArchiveCandidates prefers usage then backup',
+    test('buildRestoreUsageRemoteArchiveCandidates uses usage archive only',
         () {
       expect(
         service.buildRestoreUsageRemoteArchiveCandidates('20260310T112233Z'),
         [
-          'backups/20260310T112233Z/${CoreDefaults.webdavUsageArchiveName}',
-          '/backups/20260310T112233Z/${CoreDefaults.webdavUsageArchiveName}',
-          'backups/20260310T112233Z/backup.tar.gz',
-          '/backups/20260310T112233Z/backup.tar.gz',
+          'sync/20260310T112233Z/${CoreDefaults.webdavUsageArchiveName}',
+          '/sync/20260310T112233Z/${CoreDefaults.webdavUsageArchiveName}',
         ],
       );
     });
   });
 
   group('WebdavService archive extraction validation', () {
-    test('buildUsageOnlyArchive creates tar.gz with usage.json only', () async {
+    test('buildUsageOnlyArchive creates 7z with usage.json only', () async {
       final tmpDir =
           await Directory.systemTemp.createTemp('webdav_usage_only_');
       final usagePath = p.join(tmpDir.path, 'usage.json');
@@ -78,23 +102,24 @@ void main() {
       );
 
       expect(p.basename(archivePath), CoreDefaults.webdavUsageArchiveName);
-      expect(archivePath.endsWith('.tar.gz'), isTrue);
+      expect(archivePath.endsWith('.7z'), isTrue);
 
-      final compressed = File(archivePath).readAsBytesSync();
-      final tarData = GZipDecoder().decodeBytes(compressed);
-      final archive = TarDecoder().decodeBytes(tarData);
-      final names = archive.files
-          .where((entry) => entry.isFile)
-          .map((entry) => entry.name)
+      final extractDir =
+          await Directory.systemTemp.createTemp('webdav_usage_extract_');
+      final result = await Process.run(
+        '7z',
+        <String>['x', '-y', archivePath, '-o${extractDir.path}'],
+      );
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      final names = extractDir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .map((entry) => p.basename(entry.path))
           .toList(growable: false);
 
       expect(names, contains('usage.json'));
       expect(names, isNot(contains('config.yaml')));
-      expect(
-        names.any((name) =>
-            name.startsWith('${CoreDefaults.webdavAuthJsonDirName}/')),
-        isFalse,
-      );
+      expect(names, isNot(contains(CoreDefaults.webdavAuthJsonDirName)));
 
       File(archivePath).deleteSync();
       if (tmpDir.existsSync()) {
@@ -106,7 +131,7 @@ void main() {
         () async {
       final archivePath = await _createArchive(
         files: [
-          ArchiveFile('config.yaml', 3, 'x:1'.codeUnits),
+          _ArchiveInput('config.yaml', 'x:1'.codeUnits),
         ],
       );
       final outputUsage =
@@ -132,7 +157,7 @@ void main() {
     test('extractBackupArchive throws when config.yaml is missing', () async {
       final archivePath = await _createArchive(
         files: [
-          ArchiveFile('usage.json', 2, '{}'.codeUnits),
+          _ArchiveInput('usage.json', '{}'.codeUnits),
         ],
       );
       final tempDir =
@@ -156,15 +181,36 @@ void main() {
   });
 }
 
-Future<String> _createArchive({required List<ArchiveFile> files}) async {
+Future<String> _createArchive({required List<_ArchiveInput> files}) async {
   final tmpDir = await Directory.systemTemp.createTemp('webdav_service_test_');
-  final archivePath = p.join(tmpDir.path, 'backup.tar.gz');
-  final archive = Archive();
-  for (final file in files) {
-    archive.addFile(file);
+  final stageDir = await Directory.systemTemp.createTemp('webdav_stage_');
+  final archivePath = p.join(tmpDir.path, 'backup.7z');
+  try {
+    for (final file in files) {
+      final target = File(p.join(stageDir.path, file.path));
+      target.parent.createSync(recursive: true);
+      target.writeAsBytesSync(file.bytes, flush: true);
+    }
+    final result = await Process.run(
+      '7z',
+      <String>['a', '-t7z', '-y', archivePath, '.'],
+      workingDirectory: stageDir.path,
+    );
+    if (result.exitCode != 0) {
+      throw Exception(
+          'create archive failed: ${result.stdout}\n${result.stderr}');
+    }
+    return archivePath;
+  } finally {
+    if (stageDir.existsSync()) {
+      stageDir.deleteSync(recursive: true);
+    }
   }
-  final tarData = TarEncoder().encode(archive);
-  final gzipData = GZipEncoder().encode(tarData);
-  await File(archivePath).writeAsBytes(gzipData, flush: true);
-  return archivePath;
+}
+
+class _ArchiveInput {
+  const _ArchiveInput(this.path, this.bytes);
+
+  final String path;
+  final List<int> bytes;
 }

@@ -21,6 +21,9 @@ class CoreDefaults {
   static const String webdavAuthJsonDirName = 'auth-json';
   static const String webdavAuthJsonIndexName = 'index.json';
   static const String webdavBackupVersionsDirName = 'backups';
-  static const String webdavUsageArchiveName = 'usage.tar.gz';
+  static const String webdavUsageSyncDirName = 'sync';
+  static const String webdavBackupArchiveName = 'backup.7z';
+  static const String webdavUsageArchiveName = 'usage.7z';
   static const int webdavBackupMaxVersions = 20;
+  static const int webdavUsageSyncMaxVersions = 100;
 }

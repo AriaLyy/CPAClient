@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cpaclient/core/constants/core_defaults.dart';
@@ -14,15 +15,105 @@ import 'package:url_launcher/url_launcher.dart';
 
 enum WebdavStatusLevel { idle, running, success, failure }
 
+enum _UsageSyncAction { upload, download, noop }
+
+class _LocalUsageState {
+  const _LocalUsageState({
+    required this.hash,
+    required this.mtimeMs,
+  });
+
+  final String hash;
+  final int mtimeMs;
+}
+
+class _UsageSyncMeta {
+  const _UsageSyncMeta({
+    required this.lastLocalHash,
+    required this.lastLocalMtimeMs,
+    required this.lastRemoteVersionId,
+    required this.lastUploadAtMs,
+    required this.updatedAt,
+  });
+
+  final String lastLocalHash;
+  final int lastLocalMtimeMs;
+  final String lastRemoteVersionId;
+  final int lastUploadAtMs;
+  final String updatedAt;
+
+  factory _UsageSyncMeta.empty() {
+    return const _UsageSyncMeta(
+      lastLocalHash: '',
+      lastLocalMtimeMs: 0,
+      lastRemoteVersionId: '',
+      lastUploadAtMs: 0,
+      updatedAt: '',
+    );
+  }
+
+  _UsageSyncMeta copyWith({
+    String? lastLocalHash,
+    int? lastLocalMtimeMs,
+    String? lastRemoteVersionId,
+    int? lastUploadAtMs,
+    String? updatedAt,
+  }) {
+    return _UsageSyncMeta(
+      lastLocalHash: lastLocalHash ?? this.lastLocalHash,
+      lastLocalMtimeMs: lastLocalMtimeMs ?? this.lastLocalMtimeMs,
+      lastRemoteVersionId: lastRemoteVersionId ?? this.lastRemoteVersionId,
+      lastUploadAtMs: lastUploadAtMs ?? this.lastUploadAtMs,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'lastLocalHash': lastLocalHash,
+      'lastLocalMtimeMs': lastLocalMtimeMs,
+      'lastRemoteVersionId': lastRemoteVersionId,
+      'lastUploadAtMs': lastUploadAtMs,
+      'updatedAt': updatedAt,
+    };
+  }
+
+  static _UsageSyncMeta? tryParse(String raw) {
+    try {
+      final jsonObj = jsonDecode(raw);
+      if (jsonObj is! Map<String, dynamic>) {
+        return null;
+      }
+      return _UsageSyncMeta(
+        lastLocalHash: (jsonObj['lastLocalHash'] ?? '').toString(),
+        lastLocalMtimeMs: (jsonObj['lastLocalMtimeMs'] is int)
+            ? jsonObj['lastLocalMtimeMs'] as int
+            : int.tryParse((jsonObj['lastLocalMtimeMs'] ?? '0').toString()) ??
+                0,
+        lastRemoteVersionId: (jsonObj['lastRemoteVersionId'] ?? '').toString(),
+        lastUploadAtMs: (jsonObj['lastUploadAtMs'] is int)
+            ? jsonObj['lastUploadAtMs'] as int
+            : int.tryParse((jsonObj['lastUploadAtMs'] ?? '0').toString()) ?? 0,
+        updatedAt: (jsonObj['updatedAt'] ?? '').toString(),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
 class SettingsController extends ChangeNotifier {
   SettingsController();
 
   static const Duration _localUsageExportInterval = Duration(minutes: 1);
-  static const Duration _postCoreReadyUsageImportDelay = Duration(seconds: 20);
+  static const Duration _usageUploadInterval = Duration(minutes: 3);
+  static const Duration _syncOperationGuardDuration = Duration(seconds: 20);
+  static const Duration _postCoreReadyUsageImportDelay = Duration(seconds: 10);
   static const String _defaultWebuiPassword = '123456';
   static const int webdavAutoBackupOnStartupOnly = -1;
   static const List<int> webdavAutoBackupIntervals = <int>[
     5,
+    10,
     30,
     60,
     360,
@@ -41,6 +132,8 @@ class SettingsController extends ChangeNotifier {
   bool _startupWebdavCheckTriggered = false;
   bool _startupAutoBackupTriggered = false;
   bool _localUsageExportInProgress = false;
+  DateTime? _syncOperationGuardUntilUtc;
+  Future<void> _usageSyncQueue = Future<void>.value();
 
   ThemeMode get themeMode {
     switch (settings.themeMode) {
@@ -54,6 +147,7 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<void> load() async {
+    _setSyncOperationGuard();
     final loadedSettings = await AppServices.settings.load();
     settings = _withNormalizedWebdavAutoBackupInterval(loadedSettings);
     if (settings.webdavAutoBackupIntervalMinutes !=
@@ -62,7 +156,6 @@ class SettingsController extends ChangeNotifier {
     }
     await refreshRecentVersions();
     _restartWebdavAutoBackupTimer();
-    _restartLocalUsageExportTimer();
 
     var startupReady = true;
     try {
@@ -76,6 +169,7 @@ class SettingsController extends ChangeNotifier {
     launchAtStartup.setup(
       appName: 'CPAClient',
       appPath: Platform.resolvedExecutable,
+      args: const ['--cpaclient-autostart'],
     );
     try {
       launchAtStartupEnabled = await launchAtStartup.isEnabled();
@@ -87,9 +181,24 @@ class SettingsController extends ChangeNotifier {
     currentPort = await AppServices.sandboxConfig.readPort();
     webuiPassword = settings.webuiSecretKey;
     _startStatusPolling();
+    Future<void>? startupUsageImport;
     if (startupReady) {
       lastStatus = '';
-      await _importLocalUsageAfterDelay(trigger: 'startup');
+      startupUsageImport = _runUsageSyncTask('startup-import', () async {
+        await _importLocalUsageAfterDelay(trigger: 'startup');
+      });
+    }
+    if (startupUsageImport == null) {
+      _restartLocalUsageExportTimer();
+    } else {
+      unawaited(
+        startupUsageImport.then((_) {
+          _restartLocalUsageExportTimer();
+        }).catchError((Object e) async {
+          await AppServices.log.error('Startup usage sync failed', e);
+          _restartLocalUsageExportTimer();
+        }),
+      );
     }
 
     _triggerStartupWebdavCheck();
@@ -301,7 +410,7 @@ class SettingsController extends ChangeNotifier {
   void _restartLocalUsageExportTimer() {
     _localUsageExportTimer?.cancel();
     _localUsageExportTimer = Timer.periodic(_localUsageExportInterval, (_) {
-      unawaited(_exportLocalUsageSnapshot(trigger: 'timer-1m'));
+      unawaited(_runUsageSyncTick('timer-1m'));
     });
   }
 
@@ -325,12 +434,290 @@ class SettingsController extends ChangeNotifier {
         'Local usage import completed: trigger=$trigger input=$usageJsonPath');
   }
 
-  Future<void> _importLocalUsageAfterDelay({required String trigger}) async {
+  Future<void> _importLocalUsageAfterDelay({
+    required String trigger,
+    Duration delay = _postCoreReadyUsageImportDelay,
+  }) async {
     await AppServices.log.info(
-      'Local usage import delayed: trigger=$trigger wait=${_postCoreReadyUsageImportDelay.inSeconds}s',
+      'Local usage import delayed: trigger=$trigger wait=${delay.inSeconds}s',
     );
-    await Future<void>.delayed(_postCoreReadyUsageImportDelay);
+    await Future<void>.delayed(delay);
     await _importLocalUsageIfExists(trigger: trigger);
+  }
+
+  Future<T> _runUsageSyncTask<T>(
+    String name,
+    Future<T> Function() task,
+  ) {
+    final completer = Completer<T>();
+    _usageSyncQueue = _usageSyncQueue.catchError((_) {}).then((_) async {
+      await AppServices.log.info('Usage sync begin: $name');
+      try {
+        final result = await task();
+        completer.complete(result);
+      } catch (e, st) {
+        completer.completeError(e, st);
+      } finally {
+        await AppServices.log.info('Usage sync end: $name');
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _runUsageSyncTick(String trigger) {
+    return _runUsageSyncTask('usage-tick-$trigger', () async {
+      await _exportLocalUsageSnapshot(trigger: trigger);
+      if (_isSyncOperationGuardActive()) {
+        await AppServices.log
+            .info('Usage sync tick skipped: guard active trigger=$trigger');
+        return;
+      }
+      final localState = await _readLocalUsageState();
+      if (localState == null) {
+        await AppServices.log.info(
+            'Usage sync tick skipped: local usage missing trigger=$trigger');
+        return;
+      }
+      final meta = await _readUsageSyncMeta();
+      final remoteVersionId = await _resolveLatestRemoteUsageVersionId();
+      final action = _decideUsageSyncAction(
+        localState: localState,
+        remoteVersionId: remoteVersionId,
+        meta: meta,
+      );
+      await AppServices.log.info(
+        'Usage sync tick decision: trigger=$trigger action=$action localHash=${localState.hash} localMtimeMs=${localState.mtimeMs} remoteVersion=$remoteVersionId lastHash=${meta.lastLocalHash} lastRemote=${meta.lastRemoteVersionId}',
+      );
+
+      switch (action) {
+        case _UsageSyncAction.upload:
+          if (!_canRunUsageUploadNow(meta.lastUploadAtMs)) {
+            await AppServices.log.info(
+                'Usage sync upload skipped: 3m interval guard trigger=$trigger');
+            return;
+          }
+          final uploaded = await _runUsageOnlyUpload(trigger: trigger);
+          if (!uploaded) {
+            return;
+          }
+          final uploadedVersionId =
+              await _resolveLatestRemoteUsageVersionId() ?? remoteVersionId;
+          await _writeUsageSyncMeta(
+            _UsageSyncMeta(
+              lastLocalHash: localState.hash,
+              lastLocalMtimeMs: localState.mtimeMs,
+              lastRemoteVersionId: uploadedVersionId ?? '',
+              lastUploadAtMs: DateTime.now().toUtc().millisecondsSinceEpoch,
+              updatedAt: DateTime.now().toUtc().toIso8601String(),
+            ),
+          );
+          return;
+        case _UsageSyncAction.download:
+          final targetVersion = remoteVersionId;
+          if (targetVersion == null || targetVersion.isEmpty) {
+            await AppServices.log.info(
+                'Usage sync download skipped: remote version missing trigger=$trigger');
+            return;
+          }
+          final restored = await _runUsageOnlyDownload(
+            trigger: trigger,
+            versionId: targetVersion,
+          );
+          if (!restored) {
+            return;
+          }
+          final postDownloadLocal = await _readLocalUsageState();
+          if (postDownloadLocal == null) {
+            return;
+          }
+          await _writeUsageSyncMeta(
+            _UsageSyncMeta(
+              lastLocalHash: postDownloadLocal.hash,
+              lastLocalMtimeMs: postDownloadLocal.mtimeMs,
+              lastRemoteVersionId: targetVersion,
+              lastUploadAtMs: meta.lastUploadAtMs,
+              updatedAt: DateTime.now().toUtc().toIso8601String(),
+            ),
+          );
+          return;
+        case _UsageSyncAction.noop:
+          await _writeUsageSyncMeta(
+            meta.copyWith(
+              lastLocalHash: localState.hash,
+              lastLocalMtimeMs: localState.mtimeMs,
+              lastRemoteVersionId: remoteVersionId ?? meta.lastRemoteVersionId,
+              updatedAt: DateTime.now().toUtc().toIso8601String(),
+            ),
+          );
+          return;
+      }
+    });
+  }
+
+  _UsageSyncAction _decideUsageSyncAction({
+    required _LocalUsageState localState,
+    required String? remoteVersionId,
+    required _UsageSyncMeta meta,
+  }) {
+    final localChanged = localState.hash != meta.lastLocalHash;
+    final remoteChanged = (remoteVersionId ?? '') != meta.lastRemoteVersionId;
+
+    if (!localChanged && !remoteChanged) {
+      return _UsageSyncAction.noop;
+    }
+    if (localChanged && !remoteChanged) {
+      return _UsageSyncAction.upload;
+    }
+    if (!localChanged && remoteChanged) {
+      return _UsageSyncAction.download;
+    }
+
+    final localTime = localState.mtimeMs;
+    final remoteTime = _parseVersionIdMillis(remoteVersionId);
+    if (localTime >= remoteTime) {
+      return _UsageSyncAction.upload;
+    }
+    return _UsageSyncAction.download;
+  }
+
+  int _parseVersionIdMillis(String? versionId) {
+    if (versionId == null || versionId.isEmpty) {
+      return 0;
+    }
+    final parsed = AppServices.webdav.parseBackupVersionTime(versionId);
+    if (parsed == null) {
+      return 0;
+    }
+    return parsed.millisecondsSinceEpoch;
+  }
+
+  Future<bool> _runUsageOnlyUpload({required String trigger}) async {
+    final url = settings.webdavUrl.trim();
+    if (url.isEmpty) {
+      await AppServices.log
+          .info('Usage sync upload skipped: empty WebDAV url trigger=$trigger');
+      return false;
+    }
+    final message = await AppServices.webdav.backupUsageOnly(
+      url: url,
+      username: settings.webdavUsername,
+      password: settings.webdavPassword,
+      settingsWebuiSecretKey: settings.webuiSecretKey,
+      defaultWebuiPassword: _defaultWebuiPassword,
+      isCoreRunning: AppServices.process.isRunning,
+    );
+    return message.contains('已备份 usage 压缩包版本');
+  }
+
+  Future<bool> _runUsageOnlyDownload({
+    required String trigger,
+    required String versionId,
+  }) async {
+    final url = settings.webdavUrl.trim();
+    if (url.isEmpty) {
+      await AppServices.log.info(
+          'Usage sync download skipped: empty WebDAV url trigger=$trigger');
+      return false;
+    }
+    return AppServices.webdav.restoreUsage(
+      url: url,
+      username: settings.webdavUsername,
+      password: settings.webdavPassword,
+      versionId: versionId,
+      settingsWebuiSecretKey: settings.webuiSecretKey,
+      defaultWebuiPassword: _defaultWebuiPassword,
+    );
+  }
+
+  Future<String?> _resolveLatestRemoteUsageVersionId() async {
+    final url = settings.webdavUrl.trim();
+    if (url.isEmpty) {
+      return null;
+    }
+    try {
+      return await AppServices.webdav.latestUsageVersionId(
+        url: url,
+        username: settings.webdavUsername,
+        password: settings.webdavPassword,
+      );
+    } catch (e) {
+      await AppServices.log.error('Load latest usage version failed', e);
+      return null;
+    }
+  }
+
+  Future<_LocalUsageState?> _readLocalUsageState() async {
+    final usageFile = await AppServices.paths.usageJsonFile();
+    if (!usageFile.existsSync()) {
+      return null;
+    }
+    final bytes = await usageFile.readAsBytes();
+    final hash = _hashUsageBytes(bytes);
+    final stat = await usageFile.stat();
+    return _LocalUsageState(
+      hash: hash,
+      mtimeMs: stat.modified.millisecondsSinceEpoch,
+    );
+  }
+
+  String _hashUsageBytes(List<int> bytes) {
+    var hash = 2166136261;
+    for (final value in bytes) {
+      hash ^= value;
+      hash = (hash * 16777619) & 0xffffffff;
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
+  }
+
+  Future<_UsageSyncMeta> _readUsageSyncMeta() async {
+    final metaFile = await AppServices.paths.usageSyncMetaFile();
+    if (!metaFile.existsSync()) {
+      return _UsageSyncMeta.empty();
+    }
+    try {
+      final raw = await metaFile.readAsString();
+      final parsed = _UsageSyncMeta.tryParse(raw);
+      if (parsed == null) {
+        await AppServices.log
+            .info('Usage sync meta corrupted, fallback to empty state');
+        return _UsageSyncMeta.empty();
+      }
+      return parsed;
+    } catch (e) {
+      await AppServices.log.error('Read usage sync meta failed', e);
+      return _UsageSyncMeta.empty();
+    }
+  }
+
+  Future<void> _writeUsageSyncMeta(_UsageSyncMeta value) async {
+    final metaFile = await AppServices.paths.usageSyncMetaFile();
+    await metaFile.writeAsString(
+      jsonEncode(value.toJson()),
+      flush: true,
+    );
+  }
+
+  @visibleForTesting
+  String decideUsageSyncActionForTest({
+    required String localHash,
+    required int localMtimeMs,
+    required String? remoteVersionId,
+    required String lastLocalHash,
+    required int lastLocalMtimeMs,
+    required String lastRemoteVersionId,
+  }) {
+    final action = _decideUsageSyncAction(
+      localState: _LocalUsageState(hash: localHash, mtimeMs: localMtimeMs),
+      remoteVersionId: remoteVersionId,
+      meta: _UsageSyncMeta(
+        lastLocalHash: lastLocalHash,
+        lastLocalMtimeMs: lastLocalMtimeMs,
+        lastRemoteVersionId: lastRemoteVersionId,
+        lastUploadAtMs: 0,
+        updatedAt: '',
+      ),
+    );
+    return action.name;
   }
 
   Future<String> testWebdavConnection({
@@ -356,10 +743,18 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<String> backupConfigToWebdav() async {
+    final guard = _syncOperationGuardMessage();
+    if (guard != null) {
+      return guard;
+    }
     return _performWebdavBackup(isAuto: false);
   }
 
   Future<String> backupUsageToWebdav() async {
+    final guard = _syncOperationGuardMessage();
+    if (guard != null) {
+      return guard;
+    }
     final url = settings.webdavUrl.trim();
     if (url.isEmpty) {
       const msg = '请先填写 WebDAV 地址';
@@ -387,6 +782,12 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<String> _performWebdavBackup({required bool isAuto}) async {
+    final guard = _syncOperationGuardMessage();
+    if (guard != null) {
+      await AppServices.log
+          .info('WebDAV backup skipped: guard active isAuto=$isAuto');
+      return guard;
+    }
     final url = settings.webdavUrl.trim();
     if (url.isEmpty) {
       const msg = '请先填写 WebDAV 地址';
@@ -417,12 +818,18 @@ class SettingsController extends ChangeNotifier {
     } catch (e) {
       final logPath = await AppServices.log.logFilePath();
       final msg = 'WebDAV 备份失败: $e\n日志: $logPath';
-      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      if (!isAuto) {
+        _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      }
       return msg;
     }
   }
 
   Future<String> restoreConfigFromWebdav({required String versionId}) async {
+    final guard = _syncOperationGuardMessage();
+    if (guard != null) {
+      return guard;
+    }
     final url = settings.webdavUrl.trim();
     if (url.isEmpty) {
       const msg = '请先填写 WebDAV 地址';
@@ -574,6 +981,47 @@ class SettingsController extends ChangeNotifier {
     return AppServices.webdav.formatDioError(error);
   }
 
+  void _setSyncOperationGuard() {
+    _syncOperationGuardUntilUtc =
+        DateTime.now().toUtc().add(_syncOperationGuardDuration);
+  }
+
+  bool _isSyncOperationGuardActive() {
+    final until = _syncOperationGuardUntilUtc;
+    if (until == null) {
+      return false;
+    }
+    final now = DateTime.now().toUtc();
+    if (!now.isBefore(until)) {
+      _syncOperationGuardUntilUtc = null;
+      return false;
+    }
+    return true;
+  }
+
+  String? _syncOperationGuardMessage() {
+    final until = _syncOperationGuardUntilUtc;
+    if (until == null) {
+      return null;
+    }
+    final now = DateTime.now().toUtc();
+    if (!now.isBefore(until)) {
+      _syncOperationGuardUntilUtc = null;
+      return null;
+    }
+    final remain = until.difference(now).inSeconds;
+    return '核心刚启动/重启，请 ${remain}s 后再执行同步、备份或还原';
+  }
+
+  bool _canRunUsageUploadNow(int lastUploadAtMs) {
+    if (lastUploadAtMs <= 0) {
+      return true;
+    }
+    final elapsedMs =
+        DateTime.now().toUtc().millisecondsSinceEpoch - lastUploadAtMs;
+    return elapsedMs >= _usageUploadInterval.inMilliseconds;
+  }
+
   Future<String> openAbout() async {
     try {
       final uri = Uri.parse(CoreDefaults.aboutUrl);
@@ -628,12 +1076,16 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> updateCore() async {
     try {
-      currentPort = await AppServices.coreControl.updateCore(
-        version: settings.coreVersion,
-        githubToken: settings.githubToken,
-      );
-      notifyListeners();
-      await _importLocalUsageAfterDelay(trigger: 'core-update');
+      await _runUsageSyncTask('core-update', () async {
+        await _exportLocalUsageSnapshot(trigger: 'core-update-pre');
+        currentPort = await AppServices.coreControl.updateCore(
+          version: settings.coreVersion,
+          githubToken: settings.githubToken,
+        );
+        _setSyncOperationGuard();
+        notifyListeners();
+        await _importLocalUsageAfterDelay(trigger: 'core-update');
+      });
       await AppServices.log
           .info('Core update success: version=${settings.coreVersion}');
       return '核心更新完成并已重启';
@@ -647,9 +1099,13 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> restartCore() async {
     try {
-      currentPort = await AppServices.coreControl.restartCore();
-      notifyListeners();
-      await _importLocalUsageAfterDelay(trigger: 'manual-restart');
+      await _runUsageSyncTask('manual-restart', () async {
+        await _exportLocalUsageSnapshot(trigger: 'manual-restart-pre');
+        currentPort = await AppServices.coreControl.restartCore();
+        _setSyncOperationGuard();
+        notifyListeners();
+        await _importLocalUsageAfterDelay(trigger: 'manual-restart');
+      });
       await AppServices.log.info('Core restart success');
       return '核心已重启';
     } catch (e) {

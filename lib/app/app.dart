@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cpaclient/features/settings/settings_page.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 class CpaClientApp extends StatefulWidget {
   const CpaClientApp({super.key, required this.initialThemeMode});
@@ -14,6 +15,13 @@ class CpaClientApp extends StatefulWidget {
 
 class _CpaClientAppState extends State<CpaClientApp> {
   late ThemeMode _themeMode;
+
+  String? get _primaryFontFamily {
+    if (Platform.isWindows) {
+      return 'Microsoft YaHei';
+    }
+    return null;
+  }
 
   List<String> get _fontFallbacks {
     if (Platform.isWindows) {
@@ -69,10 +77,25 @@ class _CpaClientAppState extends State<CpaClientApp> {
 
     final primaryTextColor = colorScheme.onSurface;
     final secondaryTextColor = colorScheme.onSurfaceVariant;
+    final primaryFontFamily = _primaryFontFamily;
     final fontFallbacks = _fontFallbacks;
 
-    final baseTextTheme = base.textTheme
-        .apply(bodyColor: primaryTextColor, displayColor: primaryTextColor);
+    final useGoogleFonts = const bool.fromEnvironment(
+      'CPA_GOOGLE_FONTS_ENABLE_RUNTIME_FETCHING',
+      defaultValue: true,
+    );
+
+    final sourceTextTheme = useGoogleFonts
+        ? GoogleFonts.notoSansScTextTheme(base.textTheme)
+        : base.textTheme;
+
+    final baseTextTheme = sourceTextTheme
+        .apply(bodyColor: primaryTextColor, displayColor: primaryTextColor)
+        .apply(
+          fontFamily: primaryFontFamily,
+          bodyColor: primaryTextColor,
+          displayColor: primaryTextColor,
+        );
 
     final textTheme = baseTextTheme.copyWith(
       titleSmall: baseTextTheme.titleSmall?.copyWith(
@@ -147,6 +170,7 @@ class _CpaClientAppState extends State<CpaClientApp> {
       scaffoldBackgroundColor:
           brightness == Brightness.light ? Colors.white : null,
       textTheme: textTheme,
+      primaryTextTheme: textTheme,
       inputDecorationTheme: inputDecorationTheme,
       cardTheme: CardThemeData(
         margin: EdgeInsets.zero,

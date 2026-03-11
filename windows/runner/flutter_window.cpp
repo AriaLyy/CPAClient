@@ -4,11 +4,33 @@
 
 #include <shellapi.h>
 
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
 #include "resource.h"
 
 namespace {
 constexpr wchar_t kTrayTooltip[] = L"CPAClient";
+constexpr wchar_t kAutoStartArg[] = L"--cpaclient-autostart";
+
+bool IsAutoStartLaunch() {
+  int argc = 0;
+  wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argv == nullptr) {
+    return false;
+  }
+
+  bool matched = false;
+  for (int i = 0; i < argc; ++i) {
+    if (wcscmp(argv[i], kAutoStartArg) == 0) {
+      matched = true;
+      break;
+    }
+  }
+
+  LocalFree(argv);
+  return matched;
+}
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -36,8 +58,11 @@ bool FlutterWindow::OnCreate() {
 
   SetupTrayChannel();
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+  const bool auto_start_launch = IsAutoStartLaunch();
+  flutter_controller_->engine()->SetNextFrameCallback([&, auto_start_launch]() {
+    if (!auto_start_launch) {
+      this->Show();
+    }
   });
 
   // Flutter can complete the first frame before the "show window" callback is

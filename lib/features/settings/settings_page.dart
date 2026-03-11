@@ -130,7 +130,8 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
       await (_trayInitFuture ?? _initTray());
       await _trayService?.setDockVisible(visible);
     } catch (e) {
-      await AppServices.log.error('Set dock visibility failed: visible=$visible', e);
+      await AppServices.log
+          .error('Set dock visibility failed: visible=$visible', e);
     }
   }
 
@@ -251,11 +252,19 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
   }
 
   Future<void> _run(Future<String?> Function() action) async {
-    final msg = await action() ?? '操作完成';
-    if (!mounted) {
-      return;
+    try {
+      final msg = await action() ?? '操作完成';
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('操作失败: $e')));
     }
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _runUpdateCore() async {
@@ -359,6 +368,11 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
 
       await _run(
           () => _controller.restoreConfigFromWebdav(versionId: selected.id));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('还原失败: $e')));
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -1482,6 +1496,7 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
                   label: '自动备份间隔', hintStyle: textTheme.labelMedium),
               items: const [
                 DropdownMenuItem(value: 5, child: Text('5 分钟')),
+                DropdownMenuItem(value: 10, child: Text('10 分钟')),
                 DropdownMenuItem(value: 30, child: Text('30 分钟')),
                 DropdownMenuItem(value: 60, child: Text('1 小时')),
                 DropdownMenuItem(value: 360, child: Text('6 小时')),

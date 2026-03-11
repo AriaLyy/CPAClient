@@ -6,8 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:window_manager/window_manager.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final isAutoStartLaunch = _isAutoStartLaunch(args);
 
   _configureGoogleFonts();
 
@@ -24,6 +26,10 @@ Future<void> main() async {
   await windowManager.waitUntilReadyToShow(options, () async {
     await windowManager.setResizable(false);
     await windowManager.setPreventClose(true);
+    if (isAutoStartLaunch) {
+      await windowManager.hide();
+      return;
+    }
     await windowManager.show();
     await windowManager.focus();
   });
@@ -38,8 +44,28 @@ Future<void> main() async {
   runApp(CpaClientApp(initialThemeMode: initialThemeMode));
 }
 
+bool _isAutoStartLaunch(List<String> args) {
+  return args.contains('--cpaclient-autostart');
+}
+
+bool _isCnRegionLocale(String localeName) {
+  final normalized = localeName.replaceAll('-', '_').toLowerCase();
+  if (normalized.contains('zh_cn') || normalized.contains('zh_sg')) {
+    return true;
+  }
+  return normalized.startsWith('zh_') && normalized.contains('hans');
+}
+
 void _configureGoogleFonts() {
-  GoogleFonts.config.allowRuntimeFetching = false;
+  final enableRuntimeFetching = const bool.fromEnvironment(
+    'CPA_GOOGLE_FONTS_ENABLE_RUNTIME_FETCHING',
+    defaultValue: true,
+  );
+  GoogleFonts.config.allowRuntimeFetching = enableRuntimeFetching;
+
+  if (!enableRuntimeFetching) {
+    return;
+  }
 
   final modeDefine = const String.fromEnvironment(
     'CPA_GOOGLE_FONTS_MODE',
@@ -49,7 +75,7 @@ void _configureGoogleFonts() {
   final useCnMirror = switch (modeDefine) {
     'cn' => true,
     'global' => false,
-    _ => false,
+    _ => _isCnRegionLocale(Platform.localeName),
   };
 
   final cssHost = const String.fromEnvironment(
@@ -67,6 +93,11 @@ void _configureGoogleFonts() {
   final resolvedAssetHost = assetHost.isNotEmpty
       ? assetHost
       : (useCnMirror ? 'gstatic.loli.net' : 'fonts.gstatic.com');
+
+  final selectedMode = useCnMirror ? 'cn' : 'global';
+  debugPrint(
+    '[font] google-fonts runtime=$enableRuntimeFetching mode=$selectedMode locale=${Platform.localeName} css=$resolvedCssHost asset=$resolvedAssetHost',
+  );
 
   HttpOverrides.global = _GoogleFontsHostOverride(
     cssHost: resolvedCssHost,
