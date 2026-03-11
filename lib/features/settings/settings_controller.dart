@@ -333,34 +333,6 @@ class SettingsController extends ChangeNotifier {
     await _importLocalUsageIfExists(trigger: trigger);
   }
 
-  Future<bool> _restoreLatestWebdavBackupIfAvailable({
-    required String trigger,
-  }) async {
-    if (!_hasCompleteWebdavConfig()) {
-      await AppServices.log.info(
-          'WebDAV restore latest skipped: incomplete config, trigger=$trigger');
-      return false;
-    }
-    try {
-      final versions = await listWebdavBackupVersions();
-      if (versions.isEmpty) {
-        await AppServices.log.info(
-            'WebDAV restore latest skipped: no backups, trigger=$trigger');
-        return false;
-      }
-      final latestVersion = versions.first.id;
-      await AppServices.log.info(
-        'WebDAV restore latest usage start: trigger=$trigger version=$latestVersion',
-      );
-      return await _restoreUsageFromWebdav(versionId: latestVersion);
-    } catch (e) {
-      await AppServices.log.error(
-          'WebDAV restore latest usage failed: trigger=$trigger',
-          _formatDioError(e));
-      return false;
-    }
-  }
-
   Future<String> testWebdavConnection({
     required String url,
     required String username,
@@ -385,6 +357,33 @@ class SettingsController extends ChangeNotifier {
 
   Future<String> backupConfigToWebdav() async {
     return _performWebdavBackup(isAuto: false);
+  }
+
+  Future<String> backupUsageToWebdav() async {
+    final url = settings.webdavUrl.trim();
+    if (url.isEmpty) {
+      const msg = '请先填写 WebDAV 地址';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
+    }
+    _setWebdavStatus(WebdavStatusLevel.running, '正在备份 usage...');
+    try {
+      final msg = await AppServices.webdav.backupUsageOnly(
+        url: url,
+        username: settings.webdavUsername,
+        password: settings.webdavPassword,
+        settingsWebuiSecretKey: settings.webuiSecretKey,
+        defaultWebuiPassword: _defaultWebuiPassword,
+        isCoreRunning: AppServices.process.isRunning,
+      );
+      _setWebdavStatus(WebdavStatusLevel.success, msg);
+      return msg;
+    } catch (e) {
+      final logPath = await AppServices.log.logFilePath();
+      final msg = 'WebDAV usage 备份失败: $e\n日志: $logPath';
+      _setWebdavStatus(WebdavStatusLevel.failure, msg);
+      return msg;
+    }
   }
 
   Future<String> _performWebdavBackup({required bool isAuto}) async {
@@ -421,26 +420,6 @@ class SettingsController extends ChangeNotifier {
       _setWebdavStatus(WebdavStatusLevel.failure, msg);
       return msg;
     }
-  }
-
-  Future<bool> _restoreUsageFromWebdav({required String versionId}) async {
-    final url = settings.webdavUrl.trim();
-    if (url.isEmpty) {
-      return false;
-    }
-    final restored = await AppServices.webdav.restoreUsage(
-      url: url,
-      username: settings.webdavUsername,
-      password: settings.webdavPassword,
-      versionId: versionId,
-      settingsWebuiSecretKey: settings.webuiSecretKey,
-      defaultWebuiPassword: _defaultWebuiPassword,
-    );
-    if (restored) {
-      currentPort = await AppServices.sandboxConfig.readPort();
-      notifyListeners();
-    }
-    return restored;
   }
 
   Future<String> restoreConfigFromWebdav({required String versionId}) async {
@@ -592,7 +571,7 @@ class SettingsController extends ChangeNotifier {
   }
 
   String _formatDioError(Object error) {
-    return AppServices.webdav.formatDioErrorForTest(error);
+    return AppServices.webdav.formatDioError(error);
   }
 
   Future<String> openAbout() async {

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:cpaclient/core/constants/core_defaults.dart';
 import 'package:cpaclient/core/services/app_log_service.dart';
 import 'package:cpaclient/core/services/core_process_manager.dart';
 import 'package:cpaclient/core/services/management_access_service.dart';
@@ -50,9 +51,57 @@ void main() {
         ['versions/abc/backup.tar.gz', '/versions/abc/backup.tar.gz'],
       );
     });
+
+    test('buildRestoreUsageRemoteArchiveCandidates prefers usage then backup',
+        () {
+      expect(
+        service.buildRestoreUsageRemoteArchiveCandidates('20260310T112233Z'),
+        [
+          'backups/20260310T112233Z/${CoreDefaults.webdavUsageArchiveName}',
+          '/backups/20260310T112233Z/${CoreDefaults.webdavUsageArchiveName}',
+          'backups/20260310T112233Z/backup.tar.gz',
+          '/backups/20260310T112233Z/backup.tar.gz',
+        ],
+      );
+    });
   });
 
   group('WebdavService archive extraction validation', () {
+    test('buildUsageOnlyArchive creates tar.gz with usage.json only', () async {
+      final tmpDir =
+          await Directory.systemTemp.createTemp('webdav_usage_only_');
+      final usagePath = p.join(tmpDir.path, 'usage.json');
+      await File(usagePath).writeAsString('{"hello":"world"}', flush: true);
+
+      final archivePath = await service.buildUsageOnlyArchive(
+        localUsageJsonPath: usagePath,
+      );
+
+      expect(p.basename(archivePath), CoreDefaults.webdavUsageArchiveName);
+      expect(archivePath.endsWith('.tar.gz'), isTrue);
+
+      final compressed = File(archivePath).readAsBytesSync();
+      final tarData = GZipDecoder().decodeBytes(compressed);
+      final archive = TarDecoder().decodeBytes(tarData);
+      final names = archive.files
+          .where((entry) => entry.isFile)
+          .map((entry) => entry.name)
+          .toList(growable: false);
+
+      expect(names, contains('usage.json'));
+      expect(names, isNot(contains('config.yaml')));
+      expect(
+        names.any((name) =>
+            name.startsWith('${CoreDefaults.webdavAuthJsonDirName}/')),
+        isFalse,
+      );
+
+      File(archivePath).deleteSync();
+      if (tmpDir.existsSync()) {
+        tmpDir.deleteSync(recursive: true);
+      }
+    });
+
     test('extractUsageFromBackupArchive throws when usage.json is missing',
         () async {
       final archivePath = await _createArchive(

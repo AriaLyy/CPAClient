@@ -24,6 +24,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> with WindowListener {
   final SettingsController _controller = SettingsController();
   TrayService? _trayService;
+  Future<void>? _trayInitFuture;
   _SettingsSection _activeSection = _SettingsSection.core;
   bool _updatingCore = false;
   bool _restartingCore = false;
@@ -83,20 +84,24 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
         await _showGithubTokenDialog();
       }
     });
-    _initTray();
+    _trayInitFuture = _initTray();
     _loadAppVersion();
   }
 
   Future<void> _initTray() async {
-    final tray = TrayService(
-      sandboxConfig: AppServices.sandboxConfig,
-      onOpenSettings: () async => _focusWindow(),
-      onStopCore: _runStopCore,
-      onExit: () => _exitApp(requestedByWindowClose: false),
-      log: AppServices.log,
-    );
-    await tray.init();
-    _trayService = tray;
+    try {
+      final tray = TrayService(
+        sandboxConfig: AppServices.sandboxConfig,
+        onOpenSettings: () async => _focusWindow(),
+        onStopCore: _runStopCore,
+        onExit: () => _exitApp(requestedByWindowClose: false),
+        log: AppServices.log,
+      );
+      await tray.init();
+      _trayService = tray;
+    } catch (e) {
+      await AppServices.log.error('Tray init failed', e);
+    }
   }
 
   Future<void> _loadAppVersion() async {
@@ -117,7 +122,20 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
     }
   }
 
+  Future<void> _setDockVisible(bool visible) async {
+    if (!Platform.isMacOS) {
+      return;
+    }
+    try {
+      await (_trayInitFuture ?? _initTray());
+      await _trayService?.setDockVisible(visible);
+    } catch (e) {
+      await AppServices.log.error('Set dock visibility failed: visible=$visible', e);
+    }
+  }
+
   Future<void> _focusWindow() async {
+    await _setDockVisible(true);
     if (await windowManager.isMinimized()) {
       await windowManager.restore();
     }
@@ -156,7 +174,14 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
       await _exitApp(requestedByWindowClose: true);
       return;
     }
-    await windowManager.hide();
+    try {
+      await (_trayInitFuture ?? _initTray());
+      await windowManager.hide();
+      await _setDockVisible(false);
+    } catch (e) {
+      await AppServices.log.error('Window close minimize failed', e);
+      await _exitApp(requestedByWindowClose: true);
+    }
   }
 
   @override
@@ -225,8 +250,8 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
     }
   }
 
-  Future<void> _run(Future<String> Function() action) async {
-    final msg = await action();
+  Future<void> _run(Future<String?> Function() action) async {
+    final msg = await action() ?? '操作完成';
     if (!mounted) {
       return;
     }

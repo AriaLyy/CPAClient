@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:cpaclient/app/app.dart';
 import 'package:cpaclient/core/services/app_services.dart';
@@ -40,19 +39,17 @@ Future<void> main() async {
 }
 
 void _configureGoogleFonts() {
-  GoogleFonts.config.allowRuntimeFetching = true;
+  GoogleFonts.config.allowRuntimeFetching = false;
 
   final modeDefine = const String.fromEnvironment(
     'CPA_GOOGLE_FONTS_MODE',
     defaultValue: 'auto',
   ).toLowerCase();
 
-  final localeCountry =
-      ui.PlatformDispatcher.instance.locale.countryCode?.toUpperCase();
   final useCnMirror = switch (modeDefine) {
     'cn' => true,
     'global' => false,
-    _ => localeCountry == 'CN',
+    _ => false,
   };
 
   final cssHost = const String.fromEnvironment(
@@ -206,7 +203,12 @@ class _GoogleFontsHostRewritingHttpClient implements HttpClient {
   }
 
   @override
+  void close({bool force = false}) {
+    _inner.close(force: force);
+  }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) {
-    return (_inner as dynamic).noSuchMethod(invocation);
+    return super.noSuchMethod(invocation);
   }
 }

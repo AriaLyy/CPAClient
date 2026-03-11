@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:cpaclient/core/services/app_log_service.dart';
 import 'package:cpaclient/core/services/sandbox_config_service.dart';
+import 'package:cpaclient/features/tray/native_tray_bridge.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -13,38 +14,40 @@ class TrayService with TrayListener {
     required Future<void> Function() onStopCore,
     required Future<void> Function() onExit,
     required AppLogService log,
+    NativeTrayBridge? nativeTrayBridge,
   })  : _sandboxConfig = sandboxConfig,
         _onOpenSettings = onOpenSettings,
         _onStopCore = onStopCore,
         _onExit = onExit,
-        _log = log;
-
+        _log = log,
+        _nativeTrayBridge = nativeTrayBridge ?? NativeTrayBridge();
   final SandboxConfigService _sandboxConfig;
   final Future<void> Function() _onOpenSettings;
   final Future<void> Function() _onStopCore;
   final Future<void> Function() _onExit;
   final AppLogService _log;
-  int? _lastTrayIconMouseUpAtMs;
+  final NativeTrayBridge _nativeTrayBridge;
+  int? _lastTrayIconMouseDownAtMs;
 
   Future<void> init() async {
     await _log.info('Tray init begin');
     trayManager.addListener(this);
-    final iconPath = _trayIconPath();
-    if (iconPath != null) {
-      await _log.info('Tray set icon: $iconPath');
-      await trayManager.setIcon(iconPath);
-    } else {
-      await _log.info('Tray icon not found, skip setIcon');
-    }
+    await trayManager.setIcon(
+      _trayIconPath()!,
+      isTemplate: Platform.isMacOS,
+      iconSize: Platform.isMacOS ? 18 : 0,
+    );
     await trayManager.setToolTip('CPAClient');
     await trayManager.setContextMenu(
-      Menu(items: [
-        MenuItem(key: 'webui', label: 'WebUI'),
-        MenuItem(key: 'settings', label: '设置'),
-        MenuItem(key: 'stop_core', label: '停止核心'),
-        MenuItem.separator(),
-        MenuItem(key: 'quit', label: '退出'),
-      ]),
+      Menu(
+        items: [
+          MenuItem(key: 'webui', label: 'WebUI'),
+          MenuItem(key: 'settings', label: '设置'),
+          MenuItem(key: 'stop_core', label: '停止核心'),
+          MenuItem.separator(),
+          MenuItem(key: 'quit', label: '退出'),
+        ],
+      ),
     );
     await _log.info('Tray init completed');
   }
@@ -53,17 +56,19 @@ class TrayService with TrayListener {
     if (Platform.isWindows) {
       return 'windows/runner/resources/app_icon.ico';
     }
-    if (Platform.isMacOS || Platform.isLinux) {
+    if (Platform.isMacOS) {
+      return 'macos/Runner/Assets.xcassets/AppIcon.appiconset/tray_icon_bw_128.png';
+    }
+    if (Platform.isLinux) {
       return 'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png';
     }
     return null;
   }
 
-  @override
-  void onTrayIconMouseDown() {
+  void _onTrayIconMouseDown() {
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final lastMs = _lastTrayIconMouseUpAtMs;
-    _lastTrayIconMouseUpAtMs = nowMs;
+    final lastMs = _lastTrayIconMouseDownAtMs;
+    _lastTrayIconMouseDownAtMs = nowMs;
     if (lastMs != null && nowMs - lastMs <= 500) {
       unawaited(_log.info('Tray icon double click'));
       unawaited(_onOpenSettings());
@@ -71,20 +76,29 @@ class TrayService with TrayListener {
   }
 
   @override
+  void onTrayIconMouseDown() {
+    _onTrayIconMouseDown();
+  }
+
+  @override
   void onTrayIconRightMouseDown() {
-    unawaited(_log.info('Tray right mouse down'));
-    unawaited(trayManager.popUpContextMenu());
+    unawaited(_onTrayIconRightMouseDown());
+  }
+
+  Future<void> _onTrayIconRightMouseDown() async {
+    await _log.info('Tray right mouse down');
+    await trayManager.popUpContextMenu();
   }
 
   @override
-  void onTrayIconRightMouseUp() {
-    unawaited(_log.info('Tray right mouse up'));
+  void onTrayMenuItemClick(MenuItem menuItem) {
+    final key = menuItem.key ?? '';
+    unawaited(_onTrayMenuItemClick(key));
   }
 
-  @override
-  Future<void> onTrayMenuItemClick(MenuItem menuItem) async {
-    await _log.info('Tray menu click: key=${menuItem.key}');
-    switch (menuItem.key) {
+  Future<void> _onTrayMenuItemClick(String key) async {
+    await _log.info('Tray menu click: key=$key');
+    switch (key) {
       case 'webui':
         await _openWebui();
         break;
@@ -98,7 +112,7 @@ class TrayService with TrayListener {
         await _onExit();
         break;
       default:
-        await _log.info('Tray menu click ignored: key=${menuItem.key}');
+        await _log.info('Tray menu click ignored: key=$key');
     }
   }
 
@@ -107,6 +121,13 @@ class TrayService with TrayListener {
     final url = Uri.parse('http://127.0.0.1:$port/management.html#/login');
     await _log.info('Tray open WebUI: $url');
     await launchUrl(url, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> setDockVisible(bool visible) async {
+    if (!Platform.isMacOS) {
+      return;
+    }
+    await _nativeTrayBridge.setDockVisible(visible);
   }
 
   Future<void> dispose() async {

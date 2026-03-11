@@ -4,7 +4,14 @@ import 'package:cpaclient/core/services/app_log_service.dart';
 import 'package:dio/dio.dart';
 
 class CoreDownloaderService {
-  CoreDownloaderService(this._log) : _dio = Dio();
+  CoreDownloaderService(this._log)
+      : _dio = Dio(
+          BaseOptions(
+            connectTimeout: const Duration(seconds: 20),
+            sendTimeout: const Duration(seconds: 30),
+            receiveTimeout: const Duration(minutes: 5),
+          ),
+        );
 
   final AppLogService _log;
   final Dio _dio;

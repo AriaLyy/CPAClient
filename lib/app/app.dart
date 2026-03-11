@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:cpaclient/features/settings/settings_page.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 class CpaClientApp extends StatefulWidget {
   const CpaClientApp({super.key, required this.initialThemeMode});
@@ -72,41 +71,41 @@ class _CpaClientAppState extends State<CpaClientApp> {
     final secondaryTextColor = colorScheme.onSurfaceVariant;
     final fontFallbacks = _fontFallbacks;
 
-    final baseGoogleTextTheme = GoogleFonts.notoSansScTextTheme(base.textTheme)
+    final baseTextTheme = base.textTheme
         .apply(bodyColor: primaryTextColor, displayColor: primaryTextColor);
 
-    final textTheme = baseGoogleTextTheme.copyWith(
-      titleSmall: baseGoogleTextTheme.titleSmall?.copyWith(
+    final textTheme = baseTextTheme.copyWith(
+      titleSmall: baseTextTheme.titleSmall?.copyWith(
         fontSize: 14,
         fontWeight: FontWeight.w700,
         color: primaryTextColor,
         fontFamilyFallback: fontFallbacks,
       ),
-      labelMedium: baseGoogleTextTheme.labelMedium?.copyWith(
+      labelMedium: baseTextTheme.labelMedium?.copyWith(
         fontSize: 12,
         fontWeight: FontWeight.w500,
         color: secondaryTextColor,
         fontFamilyFallback: fontFallbacks,
       ),
-      labelSmall: baseGoogleTextTheme.labelSmall?.copyWith(
+      labelSmall: baseTextTheme.labelSmall?.copyWith(
         fontSize: 11,
         fontWeight: FontWeight.w500,
         color: secondaryTextColor,
         fontFamilyFallback: fontFallbacks,
       ),
-      bodyLarge: baseGoogleTextTheme.bodyLarge?.copyWith(
+      bodyLarge: baseTextTheme.bodyLarge?.copyWith(
         fontSize: 13,
         fontWeight: FontWeight.w400,
         color: primaryTextColor,
         fontFamilyFallback: fontFallbacks,
       ),
-      bodyMedium: baseGoogleTextTheme.bodyMedium?.copyWith(
+      bodyMedium: baseTextTheme.bodyMedium?.copyWith(
         fontSize: 14,
         fontWeight: FontWeight.w500,
         color: primaryTextColor,
         fontFamilyFallback: fontFallbacks,
       ),
-      bodySmall: baseGoogleTextTheme.bodySmall?.copyWith(
+      bodySmall: baseTextTheme.bodySmall?.copyWith(
         fontSize: 12,
         fontWeight: FontWeight.w400,
         color: primaryTextColor,

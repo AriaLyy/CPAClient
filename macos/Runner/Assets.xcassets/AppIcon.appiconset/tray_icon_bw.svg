@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-width="12">
+    <path d="M96 32a44 44 0 1 0 0 64"/>
+  </g>
+  <circle cx="96" cy="32" r="9" fill="#fff"/>
+  <text x="64" y="76"
+        fill="#fff"
+        font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif"
+        font-size="32"
+        font-weight="700"
+        text-anchor="middle"
+        dominant-baseline="middle">CPA</text>
+</svg>

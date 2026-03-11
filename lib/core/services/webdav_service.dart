@@ -181,6 +181,77 @@ class WebdavService {
     }
   }
 
+  Future<String> backupUsageOnly({
+    required String url,
+    required String username,
+    required String password,
+    required String settingsWebuiSecretKey,
+    required String defaultWebuiPassword,
+    required bool isCoreRunning,
+  }) async {
+    if (_webdavBackupInProgress) {
+      const msg = '已有备份任务正在执行，已跳过';
+      await _log.info('WebDAV usage-only backup skipped: in-progress');
+      return msg;
+    }
+
+    final normalizedUrl = normalizeUrl(url);
+    _webdavBackupInProgress = true;
+    try {
+      final usageJsonPath = await _resolveLocalUsageJsonPath();
+      await _exportUsageJsonSnapshot(
+        isCoreRunning: isCoreRunning,
+        localUsageJsonPath: usageJsonPath,
+        settingsWebuiSecretKey: settingsWebuiSecretKey,
+        defaultWebuiPassword: defaultWebuiPassword,
+        trigger: 'webdav-backup-usage-only',
+      );
+      final versionId = newBackupVersionId();
+      final versionRoot =
+          '${CoreDefaults.webdavBackupVersionsDirName}/$versionId';
+      final remoteArchivePath =
+          '$versionRoot/${CoreDefaults.webdavUsageArchiveName}';
+
+      await _log.info(
+        'WebDAV usage-only backup start: url=$normalizedUrl version=$versionId usage=$usageJsonPath',
+      );
+
+      final client = _createWebdavClient(
+        url: normalizedUrl,
+        username: username,
+        password: password,
+        debug: false,
+      );
+
+      final archivePath = await buildUsageOnlyArchive(
+        localUsageJsonPath: usageJsonPath,
+      );
+      try {
+        await _writeFileWithCandidates(
+          client: client,
+          localFilePath: archivePath,
+          remoteCandidates: buildRemotePathCandidates(remoteArchivePath),
+          logPrefix: 'WebDAV usage-only backup archive',
+        );
+      } finally {
+        final archiveFile = File(archivePath);
+        if (archiveFile.existsSync()) {
+          archiveFile.deleteSync();
+        }
+      }
+
+      final msg =
+          '已备份 usage 压缩包版本 $versionId（${CoreDefaults.webdavUsageArchiveName}）';
+      await _log.info('WebDAV usage-only backup success: $msg');
+      return msg;
+    } catch (e) {
+      await _log.error('WebDAV usage-only backup failed', _formatDioError(e));
+      rethrow;
+    } finally {
+      _webdavBackupInProgress = false;
+    }
+  }
+
   Future<List<WebdavBackupVersion>> listVersions({
     required String url,
     required String username,
@@ -219,8 +290,8 @@ class WebdavService {
       return false;
     }
 
-    final remoteArchivePath =
-        '${CoreDefaults.webdavBackupVersionsDirName}/$selectedVersionId/backup.tar.gz';
+    final remoteArchiveCandidates =
+        buildRestoreUsageRemoteArchiveCandidates(selectedVersionId);
 
     try {
       final cfg = await _sandboxConfig.ensureSandboxConfig();
@@ -235,10 +306,11 @@ class WebdavService {
         debug: false,
       );
 
-      await _readBackupArchiveFromWebdav(
+      await _readFileWithCandidates(
         client: client,
-        localArchivePath: localArchivePath,
-        remoteArchivePath: remoteArchivePath,
+        localFilePath: localArchivePath,
+        remoteCandidates: remoteArchiveCandidates,
+        logPrefix: 'WebDAV restore usage archive',
       );
 
       try {
@@ -394,6 +466,41 @@ class WebdavService {
     final normalized =
         remotePath.startsWith('/') ? remotePath.substring(1) : remotePath;
     return <String>[normalized, '/$normalized'];
+  }
+
+  List<String> buildRestoreUsageRemoteArchiveCandidates(String versionId) {
+    final versionRoot =
+        '${CoreDefaults.webdavBackupVersionsDirName}/$versionId';
+    final usageOnlyPath = '$versionRoot/${CoreDefaults.webdavUsageArchiveName}';
+    final fullBackupPath = '$versionRoot/backup.tar.gz';
+    return <String>[
+      ...buildRemotePathCandidates(usageOnlyPath),
+      ...buildRemotePathCandidates(fullBackupPath),
+    ];
+  }
+
+  Future<String> buildUsageOnlyArchive({
+    required String localUsageJsonPath,
+  }) async {
+    final usageFile = File(localUsageJsonPath);
+    if (!usageFile.existsSync()) {
+      throw Exception('usage.json 不存在: $localUsageJsonPath');
+    }
+
+    final tmpDir =
+        await Directory.systemTemp.createTemp('cpaclient_webdav_usage_backup_');
+    final archivePath =
+        p.join(tmpDir.path, CoreDefaults.webdavUsageArchiveName);
+
+    final archive = Archive()
+      ..addFile(ArchiveFile(
+          'usage.json', usageFile.lengthSync(), usageFile.readAsBytesSync()));
+
+    final tarData = TarEncoder().encode(archive);
+    final gzipData = GZipEncoder().encode(tarData);
+
+    await File(archivePath).writeAsBytes(gzipData, flush: true);
+    return archivePath;
   }
 
   Future<String> buildBackupArchive({
@@ -874,6 +981,8 @@ class WebdavService {
     return client;
   }
 
+  String formatDioError(Object error) => _formatDioError(error);
+
   @visibleForTesting
   String formatDioErrorForTest(Object error) => _formatDioError(error);
 
@@ -886,8 +995,7 @@ class WebdavService {
       final body = data == null ? 'null' : data.toString();
       final inner = error.error;
       final innerText = inner == null ? 'null' : '${inner.runtimeType}: $inner';
-      final stack =
-          error.stackTrace?.toString().split('\n').take(3).join(' | ');
+      final stack = error.stackTrace.toString().split('\n').take(3).join(' | ');
       return 'DioException(type=${error.type}, status=$status, method=$method, uri=$uri, message=${error.message}, inner=$innerText, body=$body, stack=$stack)';
     }
     return error.toString();
