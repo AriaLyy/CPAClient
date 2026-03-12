@@ -1213,7 +1213,7 @@ class SettingsController extends ChangeNotifier {
 
   void _startStatusPolling() {
     _statusTimer?.cancel();
-    _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    _statusTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       notifyListeners();
     });
   }

@@ -17,6 +17,8 @@ import 'package:cpaclient/core/services/webdav_service.dart';
 class AppServices {
   AppServices._();
 
+  static final DateTime appStartedAt = DateTime.now();
+
   static final SandboxPathService paths = SandboxPathService();
   static final AppLogService log = AppLogService(paths);
   static final SettingsCryptoService settingsCrypto = SettingsCryptoService();

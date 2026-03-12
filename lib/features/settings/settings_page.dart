@@ -729,9 +729,25 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
     );
   }
 
+  String _formatUptime(Duration duration) {
+    final totalSeconds = duration.inSeconds;
+    final days = totalSeconds ~/ 86400;
+    final hours = (totalSeconds % 86400) ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+    final hh = hours.toString().padLeft(2, '0');
+    final mm = minutes.toString().padLeft(2, '0');
+    final ss = seconds.toString().padLeft(2, '0');
+    if (days > 0) {
+      return '${days}天 $hh:$mm:$ss';
+    }
+    return '$hh:$mm:$ss';
+  }
+
   Widget _buildOverviewBanner({required bool compact}) {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final appUptime = DateTime.now().difference(AppServices.appStartedAt);
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -765,6 +781,8 @@ class _SettingsPageState extends State<SettingsPage> with WindowListener {
             ),
             const SizedBox(height: 8),
             _metricRow(label: '当前端口', value: '${_controller.currentPort}'),
+            const SizedBox(height: 8),
+            _metricRow(label: '运行时间', value: _formatUptime(appUptime)),
             const SizedBox(height: 10),
             Wrap(
               spacing: 8,
