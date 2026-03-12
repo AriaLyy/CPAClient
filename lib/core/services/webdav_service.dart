@@ -9,6 +9,7 @@ import 'package:cpaclient/core/services/management_access_service.dart';
 import 'package:cpaclient/core/services/sandbox_config_service.dart';
 import 'package:cpaclient/core/services/sandbox_path_service.dart';
 import 'package:cpaclient/core/services/usage_network_service.dart';
+import 'package:archive/archive_io.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -366,7 +367,7 @@ class WebdavService {
       final cfg = await _sandboxConfig.ensureSandboxConfig();
       final usageJsonPath = await _resolveLocalUsageJsonPath();
       final localArchivePath =
-          p.join(cfg.parent.path, 'webdav_restore_backup_usage.7z');
+          p.join(cfg.parent.path, 'webdav_restore_backup_usage.zip');
 
       final client = _createWebdavClient(
         url: normalizedUrl,
@@ -445,7 +446,7 @@ class WebdavService {
     final authRoot = _paths.resolveAuthDir(authDir);
     final usageJsonPath = await _resolveLocalUsageJsonPath();
     final localArchivePath =
-        p.join(cfg.parent.path, 'webdav_restore_backup.7z');
+        p.join(cfg.parent.path, 'webdav_restore_backup.zip');
 
     await _log.info(
       'WebDAV restore start: url=$normalizedUrl version=$selectedVersionId local=${cfg.path} restoreTo=${authRoot.path} usage=$usageJsonPath archive=$localArchivePath',
@@ -573,9 +574,9 @@ class WebdavService {
 
     try {
       usageFile.copySync(p.join(stageDir.path, 'usage.json'));
-      await _run7zCommand(
-        args: <String>['a', '-t7z', '-y', archivePath, '.'],
-        workingDirectory: stageDir.path,
+      _writeZipFromDirectory(
+        sourceDir: stageDir,
+        archivePath: archivePath,
         action: '创建 usage 备份压缩包',
       );
       return archivePath;
@@ -621,9 +622,9 @@ class WebdavService {
         jsonFile.copySync(p.join(stagedAuthDir.path, name));
       }
 
-      await _run7zCommand(
-        args: <String>['a', '-t7z', '-y', archivePath, '.'],
-        workingDirectory: stageDir.path,
+      _writeZipFromDirectory(
+        sourceDir: stageDir,
+        archivePath: archivePath,
         action: '创建完整备份压缩包',
       );
       return archivePath;
@@ -646,8 +647,9 @@ class WebdavService {
     final tmpDir =
         Directory.systemTemp.createTempSync('cpaclient_webdav_restore_usage_');
     try {
-      _run7zCommandSync(
-        args: <String>['x', '-y', localArchivePath, '-o${tmpDir.path}'],
+      _extractZipToDirectory(
+        archivePath: localArchivePath,
+        outputDir: tmpDir,
         action: '解压 usage 备份压缩包',
       );
 
@@ -677,8 +679,9 @@ class WebdavService {
     final tmpDir =
         Directory.systemTemp.createTempSync('cpaclient_webdav_restore_');
     try {
-      _run7zCommandSync(
-        args: <String>['x', '-y', localArchivePath, '-o${tmpDir.path}'],
+      _extractZipToDirectory(
+        archivePath: localArchivePath,
+        outputDir: tmpDir,
         action: '解压完整备份压缩包',
       );
 
@@ -874,39 +877,45 @@ class WebdavService {
     await _log.info('WebDAV restore restarting core completed');
   }
 
-  Future<void> _run7zCommand({
-    required List<String> args,
+  void _writeZipFromDirectory({
+    required Directory sourceDir,
+    required String archivePath,
     required String action,
-    String? workingDirectory,
-  }) async {
-    final result = await Process.run(
-      '7z',
-      args,
-      workingDirectory: workingDirectory,
-      runInShell: true,
-    );
-    if (result.exitCode != 0) {
-      throw Exception(
-        '$action失败: exit=${result.exitCode}, stdout=${result.stdout}, stderr=${result.stderr}',
-      );
+  }) {
+    try {
+      final archiveFile = File(archivePath);
+      if (!archiveFile.parent.existsSync()) {
+        archiveFile.parent.createSync(recursive: true);
+      }
+
+      final archive = Archive();
+      final entities =
+          sourceDir.listSync(recursive: true, followLinks: false).whereType<File>();
+      for (final file in entities) {
+        final relativePath = p.relative(file.path, from: sourceDir.path);
+        final bytes = file.readAsBytesSync();
+        archive.addFile(ArchiveFile(relativePath, bytes.length, bytes));
+      }
+
+      final encoded = ZipEncoder().encode(archive);
+      archiveFile.writeAsBytesSync(encoded, flush: true);
+    } catch (e) {
+      throw Exception('$action失败: $e');
     }
   }
 
-  void _run7zCommandSync({
-    required List<String> args,
+  void _extractZipToDirectory({
+    required String archivePath,
+    required Directory outputDir,
     required String action,
-    String? workingDirectory,
   }) {
-    final result = Process.runSync(
-      '7z',
-      args,
-      workingDirectory: workingDirectory,
-      runInShell: true,
-    );
-    if (result.exitCode != 0) {
-      throw Exception(
-        '$action失败: exit=${result.exitCode}, stdout=${result.stdout}, stderr=${result.stderr}',
-      );
+    try {
+      if (!outputDir.existsSync()) {
+        outputDir.createSync(recursive: true);
+      }
+      extractFileToDisk(archivePath, outputDir.path);
+    } catch (e) {
+      throw Exception('$action失败: $e');
     }
   }
 

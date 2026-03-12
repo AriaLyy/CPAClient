@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import ServiceManagement
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -7,6 +8,61 @@ class MainFlutterWindow: NSWindow {
     let windowFrame = self.frame
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
+
+    FlutterMethodChannel(
+      name: "launch_at_startup",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    ).setMethodCallHandler { call, result in
+      switch call.method {
+      case "launchAtStartupIsEnabled":
+        if #available(macOS 13.0, *) {
+          result(SMAppService.mainApp.status == .enabled)
+        } else {
+          result(false)
+        }
+      case "launchAtStartupSetEnabled":
+        guard let arguments = call.arguments as? [String: Any],
+              let enabled = arguments["setEnabledValue"] as? Bool else {
+          result(
+            FlutterError(
+              code: "bad_args",
+              message: "Missing setEnabledValue",
+              details: nil
+            )
+          )
+          return
+        }
+
+        if #available(macOS 13.0, *) {
+          do {
+            if enabled {
+              try SMAppService.mainApp.register()
+            } else {
+              try SMAppService.mainApp.unregister()
+            }
+            result(nil)
+          } catch {
+            result(
+              FlutterError(
+                code: "startup_toggle_failed",
+                message: error.localizedDescription,
+                details: nil
+              )
+            )
+          }
+        } else {
+          result(
+            FlutterError(
+              code: "unsupported_macos",
+              message: "launch at startup requires macOS 13+",
+              details: nil
+            )
+          )
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 

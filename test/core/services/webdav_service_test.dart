@@ -7,9 +7,10 @@ import 'package:cpaclient/core/services/management_access_service.dart';
 import 'package:cpaclient/core/services/sandbox_config_service.dart';
 import 'package:cpaclient/core/services/sandbox_path_service.dart';
 import 'package:cpaclient/core/services/usage_network_service.dart';
+import 'package:archive/archive_io.dart';
 import 'package:cpaclient/core/services/webdav_service.dart';
-import 'package:path/path.dart' as p;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 
 void main() {
   late WebdavService service;
@@ -69,12 +70,12 @@ void main() {
   group('WebdavService remote path candidates', () {
     test('buildRemotePathCandidates returns both no-slash and slash forms', () {
       expect(
-        service.buildRemotePathCandidates('versions/abc/backup.7z'),
-        ['versions/abc/backup.7z', '/versions/abc/backup.7z'],
+        service.buildRemotePathCandidates('versions/abc/backup.zip'),
+        ['versions/abc/backup.zip', '/versions/abc/backup.zip'],
       );
       expect(
-        service.buildRemotePathCandidates('/versions/abc/backup.7z'),
-        ['versions/abc/backup.7z', '/versions/abc/backup.7z'],
+        service.buildRemotePathCandidates('/versions/abc/backup.zip'),
+        ['versions/abc/backup.zip', '/versions/abc/backup.zip'],
       );
     });
 
@@ -91,7 +92,7 @@ void main() {
   });
 
   group('WebdavService archive extraction validation', () {
-    test('buildUsageOnlyArchive creates 7z with usage.json only', () async {
+    test('buildUsageOnlyArchive creates zip with usage.json only', () async {
       final tmpDir =
           await Directory.systemTemp.createTemp('webdav_usage_only_');
       final usagePath = p.join(tmpDir.path, 'usage.json');
@@ -102,15 +103,11 @@ void main() {
       );
 
       expect(p.basename(archivePath), CoreDefaults.webdavUsageArchiveName);
-      expect(archivePath.endsWith('.7z'), isTrue);
+      expect(archivePath.endsWith('.zip'), isTrue);
 
       final extractDir =
           await Directory.systemTemp.createTemp('webdav_usage_extract_');
-      final result = await Process.run(
-        '7z',
-        <String>['x', '-y', archivePath, '-o${extractDir.path}'],
-      );
-      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      extractFileToDisk(archivePath, extractDir.path);
       final names = extractDir
           .listSync(recursive: true)
           .whereType<File>()
@@ -184,22 +181,16 @@ void main() {
 Future<String> _createArchive({required List<_ArchiveInput> files}) async {
   final tmpDir = await Directory.systemTemp.createTemp('webdav_service_test_');
   final stageDir = await Directory.systemTemp.createTemp('webdav_stage_');
-  final archivePath = p.join(tmpDir.path, 'backup.7z');
+  final archivePath = p.join(tmpDir.path, 'backup.zip');
   try {
     for (final file in files) {
       final target = File(p.join(stageDir.path, file.path));
       target.parent.createSync(recursive: true);
       target.writeAsBytesSync(file.bytes, flush: true);
     }
-    final result = await Process.run(
-      '7z',
-      <String>['a', '-t7z', '-y', archivePath, '.'],
-      workingDirectory: stageDir.path,
-    );
-    if (result.exitCode != 0) {
-      throw Exception(
-          'create archive failed: ${result.stdout}\n${result.stderr}');
-    }
+    final encoder = ZipFileEncoder()..create(archivePath);
+    encoder.addDirectory(stageDir, includeDirName: false);
+    encoder.close();
     return archivePath;
   } finally {
     if (stageDir.existsSync()) {
