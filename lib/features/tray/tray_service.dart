@@ -27,7 +27,7 @@ class TrayService with TrayListener {
   final Future<void> Function() _onExit;
   final AppLogService _log;
   final NativeTrayBridge _nativeTrayBridge;
-  int? _lastTrayIconMouseDownAtMs;
+  int? _lastRightMenuPopupAtMs;
 
   Future<void> init() async {
     await _log.info('Tray init begin');
@@ -66,13 +66,8 @@ class TrayService with TrayListener {
   }
 
   void _onTrayIconMouseDown() {
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final lastMs = _lastTrayIconMouseDownAtMs;
-    _lastTrayIconMouseDownAtMs = nowMs;
-    if (lastMs != null && nowMs - lastMs <= 500) {
-      unawaited(_log.info('Tray icon double click'));
-      unawaited(_onOpenSettings());
-    }
+    unawaited(_log.info('Tray icon left click'));
+    unawaited(_onOpenSettings());
   }
 
   @override
@@ -86,8 +81,19 @@ class TrayService with TrayListener {
   }
 
   Future<void> _onTrayIconRightMouseDown() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastRightMenuPopupAtMs;
+    if (last != null && now - last < 200) {
+      return;
+    }
+    _lastRightMenuPopupAtMs = now;
     await _log.info('Tray right mouse down');
     await trayManager.popUpContextMenu();
+  }
+
+  @override
+  void onTrayIconRightMouseUp() {
+    unawaited(_onTrayIconRightMouseDown());
   }
 
   @override

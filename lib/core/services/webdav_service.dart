@@ -165,6 +165,7 @@ class WebdavService {
         localUsageJsonPath: usageJsonPath,
         localAuthJsonFiles: authJsonFiles,
       );
+      _validateBackupArchiveContents(archivePath);
       try {
         await _writeBackupArchiveToWebdav(
           client: client,
@@ -249,11 +250,10 @@ class WebdavService {
         localUsageJsonPath: usageJsonPath,
       );
       try {
-        await _writeFileWithCandidates(
+        await _writeUsageArchiveToWebdav(
           client: client,
-          localFilePath: archivePath,
-          remoteCandidates: buildRemotePathCandidates(remoteArchivePath),
-          logPrefix: 'WebDAV usage-only backup archive',
+          localArchivePath: archivePath,
+          remoteArchivePath: remoteArchivePath,
         );
       } finally {
         final archiveFile = File(archivePath);
@@ -376,11 +376,10 @@ class WebdavService {
         debug: false,
       );
 
-      await _readFileWithCandidates(
+      await _readUsageArchiveFromWebdav(
         client: client,
-        localFilePath: localArchivePath,
+        localArchivePath: localArchivePath,
         remoteCandidates: remoteArchiveCandidates,
-        logPrefix: 'WebDAV restore usage archive',
       );
 
       try {
@@ -653,8 +652,8 @@ class WebdavService {
         action: '解压 usage 备份压缩包',
       );
 
-      final extractedUsage = File(p.join(tmpDir.path, 'usage.json'));
-      if (!extractedUsage.existsSync()) {
+      final extractedUsage = _findExtractedFileByName(tmpDir, 'usage.json');
+      if (extractedUsage == null || !extractedUsage.existsSync()) {
         throw Exception('压缩包缺少 usage.json');
       }
       extractedUsage.copySync(localUsageJsonPath);
@@ -685,12 +684,17 @@ class WebdavService {
         action: '解压完整备份压缩包',
       );
 
-      final extractedConfig = File(p.join(tmpDir.path, 'config.yaml'));
-      final extractedUsage = File(p.join(tmpDir.path, 'usage.json'));
-      if (!extractedConfig.existsSync()) {
-        throw Exception('压缩包缺少 config.yaml');
+      final extractedConfig = _findExtractedFileByName(tmpDir, 'config.yaml');
+      final extractedUsage = _findExtractedFileByName(tmpDir, 'usage.json');
+      if (extractedConfig == null || !extractedConfig.existsSync()) {
+        final entries = _readZipEntryNames(localArchivePath);
+        if (extractedUsage != null && extractedUsage.existsSync()) {
+          throw Exception(
+              '该备份仅包含 usage.json，缺少 config.yaml，无法执行配置还原；entries=${entries.join(',')}');
+        }
+        throw Exception('压缩包缺少 config.yaml；entries=${entries.join(',')}');
       }
-      if (!extractedUsage.existsSync()) {
+      if (extractedUsage == null || !extractedUsage.existsSync()) {
         throw Exception('压缩包缺少 usage.json');
       }
 
@@ -739,6 +743,25 @@ class WebdavService {
   Future<String> _resolveLocalUsageJsonPath() async {
     final usageFile = await _paths.usageJsonFile();
     return usageFile.path;
+  }
+
+  File? _findExtractedFileByName(Directory root, String fileName) {
+    final direct = File(p.join(root.path, fileName));
+    if (direct.existsSync()) {
+      return direct;
+    }
+    final normalizedName = fileName.toLowerCase();
+    final files = root
+        .listSync(recursive: true, followLinks: false)
+        .whereType<File>()
+        .toList(growable: false);
+    for (final file in files) {
+      final normalizedPath = file.path.replaceAll('\\', '/');
+      if (p.basename(normalizedPath).toLowerCase() == normalizedName) {
+        return file;
+      }
+    }
+    return null;
   }
 
   Future<void> _exportUsageJsonSnapshot({
@@ -904,6 +927,24 @@ class WebdavService {
     }
   }
 
+  void _validateBackupArchiveContents(String archivePath) {
+    final entries = _readZipEntryNames(archivePath).map((e) => e.toLowerCase());
+    final hasConfig = entries.any((name) => name.endsWith('/config.yaml') || name == 'config.yaml');
+    final hasUsage = entries.any((name) => name.endsWith('/usage.json') || name == 'usage.json');
+    if (!hasConfig || !hasUsage) {
+      throw Exception(
+          '备份压缩包内容不完整: config.yaml=$hasConfig usage.json=$hasUsage entries=${_readZipEntryNames(archivePath).join(',')}');
+    }
+  }
+
+  List<String> _readZipEntryNames(String archivePath) {
+    final bytes = File(archivePath).readAsBytesSync();
+    final archive = ZipDecoder().decodeBytes(bytes);
+    return archive
+        .map((entry) => entry.name.replaceAll('\\', '/'))
+        .toList(growable: false);
+  }
+
   void _extractZipToDirectory({
     required String archivePath,
     required Directory outputDir,
@@ -913,7 +954,24 @@ class WebdavService {
       if (!outputDir.existsSync()) {
         outputDir.createSync(recursive: true);
       }
-      extractFileToDisk(archivePath, outputDir.path);
+      final bytes = File(archivePath).readAsBytesSync();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      for (final entry in archive) {
+        final normalizedName = entry.name.replaceAll('\\', '/');
+        final outputPath = p.normalize(p.join(outputDir.path, normalizedName));
+        if (!p.isWithin(outputDir.path, outputPath) &&
+            outputPath != outputDir.path) {
+          continue;
+        }
+        if (entry.isFile) {
+          final outFile = File(outputPath);
+          outFile.parent.createSync(recursive: true);
+          final content = entry.content as List<int>;
+          outFile.writeAsBytesSync(content, flush: true);
+        } else {
+          Directory(outputPath).createSync(recursive: true);
+        }
+      }
     } catch (e) {
       throw Exception('$action失败: $e');
     }
@@ -1125,10 +1183,10 @@ class WebdavService {
     required String localArchivePath,
     required String remoteArchivePath,
   }) async {
-    await _writeFileWithCandidates(
+    await _writeFileStrict(
       client: client,
       localFilePath: localArchivePath,
-      remoteCandidates: buildRemotePathCandidates(remoteArchivePath),
+      remotePath: remoteArchivePath,
       logPrefix: 'WebDAV backup archive',
     );
   }
@@ -1138,12 +1196,64 @@ class WebdavService {
     required String localArchivePath,
     required String remoteArchivePath,
   }) async {
-    await _readFileWithCandidates(
+    await _readFileStrict(
+      client: client,
+      localFilePath: localArchivePath,
+      remotePath: remoteArchivePath,
+      logPrefix: 'WebDAV restore archive',
+    );
+  }
+
+  Future<void> _writeUsageArchiveToWebdav({
+    required dynamic client,
+    required String localArchivePath,
+    required String remoteArchivePath,
+  }) async {
+    await _writeFileWithCandidates(
       client: client,
       localFilePath: localArchivePath,
       remoteCandidates: buildRemotePathCandidates(remoteArchivePath),
-      logPrefix: 'WebDAV restore archive',
+      logPrefix: 'WebDAV usage-only backup archive',
     );
+  }
+
+  Future<void> _readUsageArchiveFromWebdav({
+    required dynamic client,
+    required String localArchivePath,
+    required List<String> remoteCandidates,
+  }) async {
+    await _readFileWithCandidates(
+      client: client,
+      localFilePath: localArchivePath,
+      remoteCandidates: remoteCandidates,
+      logPrefix: 'WebDAV restore usage archive',
+    );
+  }
+
+  Future<void> _writeFileStrict({
+    required dynamic client,
+    required String localFilePath,
+    required String remotePath,
+    required String logPrefix,
+  }) async {
+    final localFile = File(localFilePath);
+    if (!localFile.existsSync()) {
+      throw Exception('本地文件不存在: $localFilePath');
+    }
+    await _log.info('$logPrefix strict path: $remotePath');
+    await client.writeFromFile(localFilePath, remotePath);
+    await _log.info('$logPrefix strict path success: $remotePath');
+  }
+
+  Future<void> _readFileStrict({
+    required dynamic client,
+    required String localFilePath,
+    required String remotePath,
+    required String logPrefix,
+  }) async {
+    await _log.info('$logPrefix strict path: $remotePath');
+    await client.read2File(remotePath, localFilePath);
+    await _log.info('$logPrefix strict path success: $remotePath');
   }
 
   Future<void> _writeFileWithCandidates({

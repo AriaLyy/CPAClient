@@ -175,6 +175,35 @@ void main() {
         tempDir.deleteSync(recursive: true);
       }
     });
+
+    test('extractBackupArchive supports nested top-level directory', () async {
+      final archivePath = await _createArchive(
+        files: [
+          _ArchiveInput('config.yaml', 'port: 1234'.codeUnits),
+          _ArchiveInput('usage.json', '{}'.codeUnits),
+        ],
+      );
+      final tempDir =
+          await Directory.systemTemp.createTemp('webdav_extract_nested_');
+      final outputConfig = p.join(tempDir.path, 'config.yaml');
+      final outputUsage = p.join(tempDir.path, 'usage.json');
+
+      final restored = service.extractBackupArchive(
+        localArchivePath: archivePath,
+        localConfigPath: outputConfig,
+        localUsageJsonPath: outputUsage,
+        localAuthDir: Directory(p.join(tempDir.path, 'auth')),
+      );
+
+      expect(restored, 0);
+      expect(File(outputConfig).existsSync(), isTrue);
+      expect(File(outputUsage).existsSync(), isTrue);
+
+      File(archivePath).deleteSync();
+      if (tempDir.existsSync()) {
+        tempDir.deleteSync(recursive: true);
+      }
+    });
   });
 }
 
@@ -188,9 +217,16 @@ Future<String> _createArchive({required List<_ArchiveInput> files}) async {
       target.parent.createSync(recursive: true);
       target.writeAsBytesSync(file.bytes, flush: true);
     }
-    final encoder = ZipFileEncoder()..create(archivePath);
-    encoder.addDirectory(stageDir, includeDirName: false);
-    encoder.close();
+    final archive = Archive();
+    final stagedFiles =
+        stageDir.listSync(recursive: true, followLinks: false).whereType<File>();
+    for (final stagedFile in stagedFiles) {
+      final relativePath = p.relative(stagedFile.path, from: stageDir.path);
+      final bytes = stagedFile.readAsBytesSync();
+      archive.addFile(ArchiveFile(relativePath, bytes.length, bytes));
+    }
+    final encoded = ZipEncoder().encode(archive);
+    File(archivePath).writeAsBytesSync(encoded, flush: true);
     return archivePath;
   } finally {
     if (stageDir.existsSync()) {
