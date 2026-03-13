@@ -118,9 +118,12 @@ void main() {
       expect(names, isNot(contains('config.yaml')));
       expect(names, isNot(contains(CoreDefaults.webdavAuthJsonDirName)));
 
-      File(archivePath).deleteSync();
+      await _deleteFileWithRetry(archivePath);
       if (tmpDir.existsSync()) {
         tmpDir.deleteSync(recursive: true);
+      }
+      if (extractDir.existsSync()) {
+        extractDir.deleteSync(recursive: true);
       }
     });
 
@@ -145,7 +148,7 @@ void main() {
         throwsA(isA<Exception>()),
       );
 
-      File(archivePath).deleteSync();
+      await _deleteFileWithRetry(archivePath);
       if (outputUsage.existsSync()) {
         outputUsage.deleteSync();
       }
@@ -170,7 +173,7 @@ void main() {
         throwsA(isA<Exception>()),
       );
 
-      File(archivePath).deleteSync();
+      await _deleteFileWithRetry(archivePath);
       if (tempDir.existsSync()) {
         tempDir.deleteSync(recursive: true);
       }
@@ -199,12 +202,31 @@ void main() {
       expect(File(outputConfig).existsSync(), isTrue);
       expect(File(outputUsage).existsSync(), isTrue);
 
-      File(archivePath).deleteSync();
+      await _deleteFileWithRetry(archivePath);
       if (tempDir.existsSync()) {
         tempDir.deleteSync(recursive: true);
       }
     });
   });
+}
+
+Future<void> _deleteFileWithRetry(String path) async {
+  final file = File(path);
+  if (!file.existsSync()) {
+    return;
+  }
+  const attempts = 5;
+  for (var i = 1; i <= attempts; i++) {
+    try {
+      await file.delete();
+      return;
+    } catch (_) {
+      if (i == attempts) {
+        rethrow;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
 }
 
 Future<String> _createArchive({required List<_ArchiveInput> files}) async {
@@ -218,8 +240,9 @@ Future<String> _createArchive({required List<_ArchiveInput> files}) async {
       target.writeAsBytesSync(file.bytes, flush: true);
     }
     final archive = Archive();
-    final stagedFiles =
-        stageDir.listSync(recursive: true, followLinks: false).whereType<File>();
+    final stagedFiles = stageDir
+        .listSync(recursive: true, followLinks: false)
+        .whereType<File>();
     for (final stagedFile in stagedFiles) {
       final relativePath = p.relative(stagedFile.path, from: stageDir.path);
       final bytes = stagedFile.readAsBytesSync();

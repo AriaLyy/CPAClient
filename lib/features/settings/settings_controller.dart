@@ -17,6 +17,8 @@ enum WebdavStatusLevel { idle, running, success, failure }
 
 enum _UsageSyncAction { upload, download, noop }
 
+enum _StartupUsageImportAction { local, download }
+
 class _LocalUsageState {
   const _LocalUsageState({
     required this.hash,
@@ -442,6 +444,10 @@ class SettingsController extends ChangeNotifier {
       'Local usage import delayed: trigger=$trigger wait=${delay.inSeconds}s',
     );
     await Future<void>.delayed(delay);
+    if (trigger == 'startup') {
+      await _importUsageOnStartupByFreshness(trigger: trigger);
+      return;
+    }
     await _importLocalUsageIfExists(trigger: trigger);
   }
 
@@ -552,6 +558,71 @@ class SettingsController extends ChangeNotifier {
           return;
       }
     });
+  }
+
+  Future<void> _importUsageOnStartupByFreshness(
+      {required String trigger}) async {
+    final localState = await _readLocalUsageState();
+    final remoteVersionId = await _resolveLatestRemoteUsageVersionId();
+    final localMtimeMs = localState?.mtimeMs;
+    final remoteTimeMs = _parseVersionIdMillis(remoteVersionId);
+    final action = _decideStartupUsageImportAction(
+      localMtimeMs: localMtimeMs,
+      remoteVersionId: remoteVersionId,
+    );
+
+    await AppServices.log.info(
+      'Startup usage import decision: trigger=$trigger localMtimeMs=$localMtimeMs remoteVersionId=$remoteVersionId remoteTimeMs=$remoteTimeMs action=$action',
+    );
+
+    if (action == _StartupUsageImportAction.download) {
+      final targetVersion = remoteVersionId;
+      if (targetVersion != null && targetVersion.isNotEmpty) {
+        final restored = await _runUsageOnlyDownload(
+          trigger: trigger,
+          versionId: targetVersion,
+        );
+        if (restored) {
+          await AppServices.log.info(
+            'Startup usage import action completed: trigger=$trigger action=download',
+          );
+          return;
+        }
+      }
+      await AppServices.log.info(
+        'Startup usage import fallback: trigger=$trigger action=fallback-local',
+      );
+      await _importLocalUsageIfExists(trigger: '$trigger-fallback');
+      return;
+    }
+
+    await AppServices.log.info(
+      'Startup usage import action completed: trigger=$trigger action=local',
+    );
+    await _importLocalUsageIfExists(trigger: trigger);
+  }
+
+  _StartupUsageImportAction _decideStartupUsageImportAction({
+    required int? localMtimeMs,
+    required String? remoteVersionId,
+  }) {
+    final hasLocal = localMtimeMs != null;
+    final hasRemote = remoteVersionId != null && remoteVersionId.isNotEmpty;
+
+    if (!hasLocal) {
+      return hasRemote
+          ? _StartupUsageImportAction.download
+          : _StartupUsageImportAction.local;
+    }
+    if (!hasRemote) {
+      return _StartupUsageImportAction.local;
+    }
+
+    final remoteTimeMs = _parseVersionIdMillis(remoteVersionId);
+    if (remoteTimeMs > localMtimeMs) {
+      return _StartupUsageImportAction.download;
+    }
+    return _StartupUsageImportAction.local;
   }
 
   _UsageSyncAction _decideUsageSyncAction({
@@ -695,6 +766,17 @@ class SettingsController extends ChangeNotifier {
       jsonEncode(value.toJson()),
       flush: true,
     );
+  }
+
+  @visibleForTesting
+  String decideStartupUsageImportActionForTest({
+    required int? localMtimeMs,
+    required String? remoteVersionId,
+  }) {
+    return _decideStartupUsageImportAction(
+      localMtimeMs: localMtimeMs,
+      remoteVersionId: remoteVersionId,
+    ).name;
   }
 
   @visibleForTesting

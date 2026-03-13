@@ -8,6 +8,50 @@ void main() {
     controller = SettingsController();
   });
 
+  group('startup usage import decision rules', () {
+    test('download when local missing and remote exists', () {
+      final action = controller.decideStartupUsageImportActionForTest(
+        localMtimeMs: null,
+        remoteVersionId: '20260311T010203Z',
+      );
+      expect(action, 'download');
+    });
+
+    test('download when remote newer than local mtime', () {
+      final action = controller.decideStartupUsageImportActionForTest(
+        localMtimeMs: DateTime.utc(2026, 3, 11, 1, 2, 2).millisecondsSinceEpoch,
+        remoteVersionId: '20260311T010203Z',
+      );
+      expect(action, 'download');
+    });
+
+    test('local when remote older than local mtime', () {
+      final action = controller.decideStartupUsageImportActionForTest(
+        localMtimeMs: DateTime.utc(2026, 3, 11, 1, 2, 4).millisecondsSinceEpoch,
+        remoteVersionId: '20260311T010203Z',
+      );
+      expect(action, 'local');
+    });
+
+    test('local when mtime equals remote time', () {
+      final localMtimeMs =
+          DateTime.utc(2026, 3, 11, 1, 2, 3).millisecondsSinceEpoch;
+      final action = controller.decideStartupUsageImportActionForTest(
+        localMtimeMs: localMtimeMs,
+        remoteVersionId: '20260311T010203Z',
+      );
+      expect(action, 'local');
+    });
+
+    test('local when remote version cannot be parsed', () {
+      final action = controller.decideStartupUsageImportActionForTest(
+        localMtimeMs: DateTime.utc(2026, 3, 11, 1, 2, 4).millisecondsSinceEpoch,
+        remoteVersionId: 'invalid-version',
+      );
+      expect(action, 'local');
+    });
+  });
+
   group('usage sync decision rules', () {
     test('noop when local and remote unchanged', () {
       final action = controller.decideUsageSyncActionForTest(
