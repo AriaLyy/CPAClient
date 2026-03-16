@@ -170,15 +170,23 @@ jobs:
 
       - name: Build macOS
         if: matrix.target == 'darwin'
-        env:
-          CODE_SIGNING_ALLOWED: "NO"
-          CODE_SIGNING_REQUIRED: "NO"
-          CODE_SIGN_IDENTITY: ""
-          EXPANDED_CODE_SIGN_IDENTITY: ""
-          DEVELOPMENT_TEAM: ""
-          CODE_SIGN_STYLE: Manual
-          PROVISIONING_PROFILE_SPECIFIER: ""
-        run: flutter build macos --release --build-name="${{ needs.prepare.outputs.build_name }}" --build-number="${{ needs.prepare.outputs.build_number }}"
+        shell: bash
+        run: |
+          flutter build macos --release --config-only --build-name="${{ needs.prepare.outputs.build_name }}" --build-number="${{ needs.prepare.outputs.build_number }}"
+          xcodebuild \
+            -workspace macos/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -derivedDataPath build/macos \
+            -destination "platform=macOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build
 
       - name: Build Windows
         if: matrix.target == 'windows'
