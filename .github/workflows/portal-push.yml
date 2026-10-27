@@ -12,13 +12,17 @@
 #
 # 与 v* tag（release.yml 出六平台包）互不干扰：web_v_* 以 w 开头，不匹配 v*。
 #
+# 两个 job 跑在两种 runner 上（2026-10-27 实测定型）：
+#   - taichi-api.dddo.top 只存在于局域网 DNS（8.8.8.8 查 NXDOMAIN），GitHub 托管 runner
+#     解析不了（curl exit 6，web_t_0.1.0 实录）→ 测试推送必须由 NAS 上的 self-hosted
+#     runner 执行，经局域网直达；
+#   - oecho-api.dddo.top 有公网解析（45.38.190.164）→ 正式推送留在 ubuntu-latest。
+#
 # 凭证（2026-10-27 用户拍板）：测试环境 App Id/Secret 内联在本文件——虽然仓库公开，
 # 但这是测试环境凭证，泄露的处置就是在 TaiChi 后台重置密钥后改这里；正式环境凭证
-# 绝不内联，仍走仓库 Secrets（缺键快速失败并点名）。
+# 绝不内联，仍走仓库 Secrets（缺键快速失败并点名）：
 #   PORTAL_APP_ID_PROD / PORTAL_APP_SECRET_PROD   oecho 正式环境（待下发）
 # 注意：测试凭证写成字面量，不要改成 ${{ secrets.* }}——Secret 缺失时的空串会盖掉内联值。
-# GitHub 托管 runner 没有 clash 代理环境变量，QCopy 记录的 taichi:666 CONNECT 失败是
-# 其 NAS runner 的环境问题，这里不需要 no_proxy 补丁。
 
 name: portal-push
 
@@ -37,50 +41,50 @@ permissions:
   contents: read
 
 jobs:
-  push:
-    name: Push portal HTML
+  push-test:
+    name: Push portal HTML (taichi test)
+    if: startsWith(github.ref_name, 'web_t_')
+    runs-on: [self-hosted, nas]
+    timeout-minutes: 5
+    env:
+      HTML_PATH: portal/index.html
+      # 测试环境凭证内联（见头部说明）
+      PORTAL_APP_ID_TEST: com.zozo101.cpaClient
+      PORTAL_APP_SECRET_TEST: j44GmHm4SvXNkZmv6w9DOdp3uwTVOcwmabGCV_10jnY
+      # runner 服务带全局代理上 GitHub；taichi/gitea 是局域网域名，必须旁路代理直连
+      #（QCopy NAS runner 同坑实录：taichi:666 走 CONNECT 隧道握手失败 curl 35）
+      no_proxy: localhost,127.0.0.1,gitea.dddo.top,taichi-api.dddo.top,taichi.dddo.top
+      NO_PROXY: localhost,127.0.0.1,gitea.dddo.top,taichi-api.dddo.top,taichi.dddo.top
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push to portal
+        run: |
+          set -euo pipefail
+          X_APP_ID="$PORTAL_APP_ID_TEST" X_APP_SECRET="$PORTAL_APP_SECRET_TEST" \
+            bash .github/scripts/push-portal.sh "https://taichi-api.dddo.top:666" "$HTML_PATH"
+          echo "草稿已更新（${GITHUB_REF_NAME} → taichi 测试）。到 TaiChi 管理后台「门户管理」预览后点「发布」才对外可见：https://taichi.dddo.top:666"
+
+  push-prod:
+    name: Push portal HTML (oecho prod)
+    if: startsWith(github.ref_name, 'web_v_')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       HTML_PATH: portal/index.html
-      # 测试环境凭证内联（见头部说明）；正式仍走仓库 Secrets
-      PORTAL_APP_ID_TEST: com.zozo101.cpaClient
-      PORTAL_APP_SECRET_TEST: j44GmHm4SvXNkZmv6w9DOdp3uwTVOcwmabGCV_10jnY
     steps:
       - uses: actions/checkout@v4
 
       - name: Push to portal
         env:
-          # 只引用正式环境的 Secrets——若把测试两个键也写成 ${{ secrets.* }}，
-          # Secret 缺失时的空串会盖掉上面内联的测试凭证
           PORTAL_APP_ID_PROD: ${{ secrets.PORTAL_APP_ID_PROD }}
           PORTAL_APP_SECRET_PROD: ${{ secrets.PORTAL_APP_SECRET_PROD }}
         run: |
           set -euo pipefail
-          # 环境与凭证成对选定：两个 TaiChi 实例独立部署，App Id/Secret 互不通用。
-          case "${GITHUB_REF_NAME}" in
-            web_t_*)
-              API_BASE=https://taichi-api.dddo.top:666
-              PORTAL_BASE=https://taichi.dddo.top:666
-              SECRET_SUFFIX=TEST
-              APP_ID="${PORTAL_APP_ID_TEST:-}"
-              APP_SECRET="${PORTAL_APP_SECRET_TEST:-}"
-              ;;
-            web_v_*)
-              API_BASE=https://oecho-api.dddo.top
-              PORTAL_BASE=https://oecho.dddo.top
-              SECRET_SUFFIX=PROD
-              APP_ID="${PORTAL_APP_ID_PROD:-}"
-              APP_SECRET="${PORTAL_APP_SECRET_PROD:-}"
-              ;;
-            *) echo "::error::意外的标签: ${GITHUB_REF_NAME}（只认 web_t_* / web_v_*）"; exit 1 ;;
-          esac
-          if [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ]; then
-            echo "::error::仓库 Secrets 缺 PORTAL_APP_ID_${SECRET_SUFFIX} / PORTAL_APP_SECRET_${SECRET_SUFFIX}（${GITHUB_REF_NAME} 要推 $PORTAL_BASE）。到 Settings → Secrets and variables → Actions 补配后重推该 tag。"
+          if [ -z "${PORTAL_APP_ID_PROD:-}" ] || [ -z "${PORTAL_APP_SECRET_PROD:-}" ]; then
+            echo "::error::仓库 Secrets 缺 PORTAL_APP_ID_PROD / PORTAL_APP_SECRET_PROD（${GITHUB_REF_NAME} 要推 https://oecho.dddo.top）。到 Settings → Secrets and variables → Actions 补配后重推该 tag。"
             exit 1
           fi
-
-          X_APP_ID="$APP_ID" X_APP_SECRET="$APP_SECRET" \
-            bash .github/scripts/push-portal.sh "$API_BASE" "$HTML_PATH"
-
-          echo "草稿已更新（${GITHUB_REF_NAME} → $API_BASE）。到 TaiChi 管理后台「门户管理」预览后点「发布」才对外可见：$PORTAL_BASE"
+          X_APP_ID="$PORTAL_APP_ID_PROD" X_APP_SECRET="$PORTAL_APP_SECRET_PROD" \
+            bash .github/scripts/push-portal.sh "https://oecho-api.dddo.top" "$HTML_PATH"
+          echo "草稿已更新（${GITHUB_REF_NAME} → oecho 正式）。到 TaiChi 管理后台「门户管理」预览后点「发布」才对外可见：https://oecho.dddo.top"
