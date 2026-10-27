@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPAClient — 把 CLIProxyAPI 装进能常驻桌面的外壳</title>
+<meta name="description" content="CPAClient 是 CLIProxyAPI 的桌面客户端：按系统架构自动拉取核心 Release、版本切换与热更新、配置一键备份到 WebDAV、统计数据每 60 秒落快照重启不丢、托盘常驻与开机自启。全部跑在你自己机器上，GPL-3.0 开源。">
+<meta property="og:title" content="CPAClient — 核心自己更新，统计不会丢">
+<meta property="og:description" content="CLIProxyAPI 的桌面外壳：一键准备核心、WebDAV 备份与多端同步、托盘常驻。Windows / macOS / Linux × amd64 / arm64。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23515b92'/%3E%3Ctext x='16' y='23' font-family='Arial,sans-serif' font-size='19' font-weight='bold' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
+<style>
+html { scroll-behavior: smooth; }
+body { margin: 0; background: #f6f5fb; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<style>
+:where(#cportal) {
+  /* 页面皮肤取自应用真实配色：Material 3 fromSeed(Colors.indigo) 亮色 */
+  --cp-bg: #f6f5fb;
+  --cp-surface: #ffffff;
+  --cp-surface-2: #f5f2fa;
+  --cp-surface-3: #e4e1e9;
+  --cp-line: #e4e1e9;
+  --cp-line-strong: #c7c5d0;
+  --cp-ink: #1b1b21;
+  --cp-ink-2: #45464f;
+  --cp-muted: #767680;
+  --cp-primary: #515b92;
+  --cp-primary-deep: #3a4470;
+  --cp-container: #dee0ff;
+  --cp-on-container: #1d2144;
+  --cp-success: #4caf50;
+  --cp-warning: #b36d00;
+  --cp-danger: #ba1a1a;
+  --cp-night: #121318;
+  --cp-dur: 200ms;
+  --cp-ease: cubic-bezier(0.25, 0.8, 0.5, 1);
+  --cp-font: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', Inter, 'Noto Sans SC', sans-serif;
+  --cp-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--cp-font);
+  color: var(--cp-ink);
+  background: var(--cp-bg);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+:where(#cportal) *, :where(#cportal) *::before, :where(#cportal) *::after { box-sizing: border-box; }
+:where(#cportal) h1, :where(#cportal) h2, :where(#cportal) h3, :where(#cportal) h4, :where(#cportal) h5, :where(#cportal) p { margin: 0; }
+:where(#cportal) a { color: inherit; text-decoration: none; }
+:where(#cportal) button { font: inherit; color: inherit; }
+.cp-container { width: min(1180px, 100% - 48px); margin-inline: auto; }
+
+/* ---------- nav ---------- */
+.cp-nav {
+  position: sticky; top: 0; z-index: 40;
+  background: rgba(246, 245, 251, .82);
+  backdrop-filter: saturate(1.6) blur(12px);
+  border-bottom: 1px solid var(--cp-line);
+}
+.cp-nav__inner { display: flex; align-items: center; gap: 24px; height: 62px; }
+.cp-brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; letter-spacing: .2px; }
+.cp-brand__mark {
+  width: 26px; height: 26px; border-radius: 7px; background: var(--cp-primary); color: #fff;
+  display: grid; place-items: center; font-size: 15px; font-weight: 700; line-height: 1;
+}
+.cp-nav__links { display: flex; gap: 22px; margin-left: auto; font-size: 14px; color: var(--cp-ink-2); }
+.cp-nav__links a { transition: color var(--cp-dur) var(--cp-ease); }
+.cp-nav__links a:hover { color: var(--cp-primary); }
+.cp-nav__cta {
+  background: var(--cp-primary); color: #fff; font-size: 14px; font-weight: 600;
+  padding: 9px 16px; border-radius: 10px; transition: background var(--cp-dur) var(--cp-ease), transform var(--cp-dur) var(--cp-ease);
+}
+.cp-nav__cta:hover { background: var(--cp-primary-deep); transform: translateY(-1px); }
+@media (max-width: 860px) { .cp-nav__links { display: none; } .cp-nav__inner { height: 58px; } }
+
+/* ---------- hero ---------- */
+.cp-hero { position: relative; padding: 62px 0 34px; overflow: hidden; }
+.cp-hero::before {
+  content: ""; position: absolute; inset: -180px -120px auto -120px; height: 620px; z-index: 0;
+  background:
+    radial-gradient(560px 300px at 18% 26%, rgba(222, 224, 255, .95), transparent 70%),
+    radial-gradient(520px 320px at 82% 12%, rgba(207, 226, 240, .8), transparent 72%),
+    radial-gradient(420px 260px at 62% 62%, rgba(232, 233, 250, .9), transparent 70%);
+  pointer-events: none;
+}
+.cp-hero__inner { position: relative; z-index: 1; text-align: center; }
+.cp-badge {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;
+  color: var(--cp-on-container); background: rgba(255, 255, 255, .78);
+  border: 1px solid var(--cp-container); border-radius: 999px; padding: 6px 14px 6px 10px;
+}
+.cp-badge i { width: 7px; height: 7px; border-radius: 50%; background: var(--cp-success); box-shadow: 0 0 0 3px rgba(76, 175, 80, .18); }
+.cp-hero h1 { font-size: clamp(28px, 4.6vw, 48px); line-height: 1.22; letter-spacing: -.8px; margin-top: 22px; font-weight: 800; }
+.cp-hero h1 em { font-style: normal; color: var(--cp-primary); }
+.cp-hero__sub { max-width: 780px; margin: 18px auto 0; font-size: clamp(15px, 1.5vw, 17px); color: var(--cp-ink-2); }
+.cp-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 28px; }
+.cp-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 10px 22px; border-radius: 12px; border: 1px solid transparent;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  transition: background var(--cp-dur) var(--cp-ease), border-color var(--cp-dur) var(--cp-ease), transform var(--cp-dur) var(--cp-ease), color var(--cp-dur) var(--cp-ease);
+}
+.cp-btn--primary { background: var(--cp-primary); color: #fff; box-shadow: 0 8px 22px rgba(81, 91, 146, .26); }
+.cp-btn--primary:hover { background: var(--cp-primary-deep); transform: translateY(-1px); }
+.cp-btn--ghost { background: rgba(255, 255, 255, .7); border-color: var(--cp-line-strong); color: var(--cp-ink); }
+.cp-btn--ghost:hover { border-color: var(--cp-primary); color: var(--cp-primary); }
+.cp-hero__platforms { margin-top: 16px; font-size: 13px; color: var(--cp-muted); }
+.cp-hero__platforms code { font-family: var(--cp-mono); font-size: 12px; }
+
+/* ---------- preview shell ---------- */
+.cp-preview { margin-top: 40px; }
+.cp-tabs {
+  display: inline-flex; gap: 4px; padding: 4px; margin-bottom: 16px;
+  background: var(--cp-surface-2); border: 1px solid var(--cp-line); border-radius: 13px;
+}
+.cp-tab {
+  border: 0; background: transparent; border-radius: 10px; padding: 8px 16px;
+  font-size: 13.5px; font-weight: 600; color: var(--cp-muted); cursor: pointer;
+  transition: background var(--cp-dur) var(--cp-ease), color var(--cp-dur) var(--cp-ease);
+}
+.cp-tab:hover { color: var(--cp-ink); }
+.cp-tab.cp-on { background: var(--cp-surface); color: var(--cp-primary); box-shadow: 0 1px 3px rgba(27, 27, 33, .1); }
+.cp-pane { display: none; }
+.cp-pane.cp-on { display: block; animation: cp-fade var(--cp-dur) var(--cp-ease); }
+@keyframes cp-fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (max-width: 700px) { .cp-tabs { display: grid; grid-template-columns: repeat(3, 1fr); } .cp-tab { padding: 8px 4px; font-size: 12px; } }
+
+.cp-stage { position: relative; margin-inline: auto; }
+.cp-win {
+  position: absolute; top: 0; left: 0; width: 860px; background: var(--cp-surface);
+  border: 1px solid var(--cp-line-strong); border-radius: 12px; overflow: hidden;
+  box-shadow: 0 26px 60px rgba(27, 27, 33, .16), 0 3px 10px rgba(27, 27, 33, .07);
+  transform-origin: top left;
+}
+.cp-win__bar {
+  display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 12px;
+  background: #f2f2f9; border-bottom: 1px solid var(--cp-line); font-size: 12px; color: var(--cp-ink-2);
+}
+.cp-lights { display: flex; gap: 7px; }
+.cp-lights i { width: 11px; height: 11px; border-radius: 50%; background: #d3d2da; }
+.cp-win__title { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.cp-win__title svg { color: var(--cp-primary); }
+.cp-win__tools { display: flex; gap: 4px; margin-left: auto; align-items: center; }
+.cp-autodemo {
+  border: 1px solid var(--cp-line-strong); background: var(--cp-surface); border-radius: 8px;
+  font-size: 11.5px; font-weight: 600; color: var(--cp-ink-2); padding: 3px 9px; cursor: pointer;
+  transition: border-color var(--cp-dur) var(--cp-ease), color var(--cp-dur) var(--cp-ease);
+}
+.cp-autodemo:hover { border-color: var(--cp-primary); color: var(--cp-primary); }
+.cp-autodemo.cp-busy { color: var(--cp-primary); border-color: var(--cp-container); }
+.cp-win__cap {
+  position: absolute; left: 0; right: 0; bottom: -30px; font-size: 12px; color: var(--cp-muted); text-align: center;
+}
+.cp-hint { margin-top: 34px; font-size: 12.5px; color: var(--cp-muted); text-align: center; }
+.cp-hint b { color: var(--cp-primary); font-weight: 600; }
+/* ================= 应用内界面（几何与色值取自 settings_page.dart / app.dart） ================= */
+.cp-app {
+  --a-surface: #ffffff;
+  --a-surface-c: #fbf8ff;
+  --a-surface-cl: #f5f2fa;
+  --a-surface-ch: #e4e1e9;
+  --a-field: #ffffff;
+  --a-line: #e4e1e9;
+  --a-line-strong: #c7c5d0;
+  --a-ink: #1b1b21;
+  --a-muted: #767680;
+  --a-primary: #515b92;
+  --a-container: #dee0ff;
+  --a-on-container: #1d2144;
+  --a-tonal: #e8e9fa;
+  --a-bar: #f2f2f9;
+  display: flex; gap: 24px; height: 608px; padding: 18px 20px 24px;
+  text-align: left;
+  background: var(--a-surface); color: var(--a-ink);
+  transition: background var(--cp-dur) var(--cp-ease), color var(--cp-dur) var(--cp-ease);
+}
+.cp-win[data-night="1"] .cp-app {
+  --a-surface: #121318;
+  --a-surface-c: #1b1b21;
+  --a-surface-cl: #1b1b21;
+  --a-surface-ch: #26272e;
+  --a-field: #0d0e13;
+  --a-line: #2e2e36;
+  --a-line-strong: #434659;
+  --a-ink: #e4e1e9;
+  --a-muted: #a3a3ad;
+  --a-primary: #bac3ff;
+  --a-container: #394379;
+  --a-on-container: #dee0ff;
+  --a-tonal: #26272e;
+  --a-bar: #1b1b21;
+}
+.cp-win[data-night="1"] .cp-win__bar { background: #1b1b21; border-color: #2e2e36; color: #c9c9d2; }
+.cp-app__side { width: 200px; flex: none; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+.cp-app__main { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
+.cp-app__main::-webkit-scrollbar { width: 8px; }
+.cp-app__main::-webkit-scrollbar-thumb { background: var(--a-line-strong); border-radius: 8px; }
+.cp-app__main::-webkit-scrollbar-track { background: transparent; }
+
+.cp-ov { border: 1px solid var(--a-line); border-radius: 14px; background: var(--a-surface-c); padding: 13px 14px 14px; flex: none; }
+.cp-ov__t { font-size: 12px; color: var(--a-muted); }
+.cp-ov__row { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-top: 8px; }
+.cp-ov__row:first-of-type { margin-top: 10px; }
+.cp-ov__v { margin-left: auto; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.cp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--a-muted); flex: none; }
+.cp-dot[data-s="on"] { background: #4caf50; }
+.cp-dot[data-s="off"] { background: #e53935; }
+.cp-dot[data-s="run"] { background: var(--a-primary); animation: cp-pulse 1s var(--cp-ease) infinite; }
+@keyframes cp-pulse { 50% { opacity: .35; } }
+.cp-pill {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 12px;
+  border: 1px solid var(--a-primary); color: var(--a-primary); border-radius: 999px;
+  padding: 6px 10px; font-size: 12px; cursor: pointer; background: transparent;
+  transition: background var(--cp-dur) var(--cp-ease);
+}
+.cp-pill:hover { background: rgba(81, 91, 146, .1); }
+
+.cp-navc { border: 1px solid var(--a-line); border-radius: 16px; background: var(--a-surface-cl); padding: 10px 10px 12px; flex: none; }
+.cp-navc__t { font-size: 12px; color: var(--a-muted); padding: 8px 10px 12px; }
+.cp-navi {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  border: 1px solid transparent; background: transparent; border-radius: 14px;
+  padding: 11px 12px; font-size: 12px; font-weight: 500; cursor: pointer; color: var(--a-ink);
+  transition: background var(--cp-dur) var(--cp-ease);
+}
+.cp-navi + .cp-navi { margin-top: 8px; }
+.cp-navi:hover { background: var(--a-surface-ch); }
+.cp-navi.cp-on { background: var(--a-container); color: var(--a-on-container); }
+.cp-navi svg { flex: none; }
+.cp-navi .cp-dot { margin-left: auto; }
+
+.cp-card { border: 1px solid var(--a-line); border-radius: 14px; padding: 16px 18px 18px; background: var(--a-surface); }
+.cp-card + .cp-card { margin-top: 12px; }
+.cp-card__h { display: flex; align-items: flex-start; gap: 10px; }
+.cp-card__ic { width: 30px; height: 30px; border-radius: 8px; background: var(--a-container); color: var(--a-on-container); display: grid; place-items: center; flex: none; }
+.cp-card__tt { font-size: 14px; font-weight: 700; }
+.cp-card__st { font-size: 12px; color: var(--a-muted); margin-top: 3px; }
+.cp-card__h .cp-dot { margin: 8px 8px 0 auto; }
+.cp-card__body { margin-top: 18px; }
+.cp-lbl { font-size: 12px; font-weight: 500; color: var(--a-muted); }
+.cp-lbl--ink { color: var(--a-ink); font-weight: 700; }
+.cp-stack { display: flex; flex-direction: column; gap: 16px; }
+
+.cp-field { position: relative; border: 1px solid var(--a-line-strong); border-radius: 10px; background: var(--a-field); padding: 6px 12px 5px; min-height: 46px; cursor: default; }
+.cp-field__l { display: block; font-size: 11px; color: var(--a-muted); }
+.cp-field__v { display: block; font-size: 13px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--cp-mono); }
+.cp-field__v--dots { letter-spacing: 2px; font-family: var(--cp-font); }
+.cp-field__eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: var(--a-muted); cursor: pointer; padding: 6px; display: grid; place-items: center; }
+.cp-field + .cp-help { font-size: 11px; color: var(--a-muted); margin-top: 5px; }
+.cp-help--up { color: var(--a-primary); font-weight: 600; }
+.cp-select::after { content: ""; position: absolute; right: 13px; top: 50%; width: 8px; height: 8px; border-right: 1.6px solid var(--a-ink); border-bottom: 1.6px solid var(--a-ink); transform: translateY(-70%) rotate(45deg); }
+
+.cp-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.cp-b {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 40px; padding: 10px 14px; border-radius: 10px; border: 1px solid transparent;
+  font-size: 12px; font-weight: 600; cursor: pointer; background: var(--a-tonal); color: var(--a-on-container);
+  transition: filter var(--cp-dur) var(--cp-ease), background var(--cp-dur) var(--cp-ease), color var(--cp-dur) var(--cp-ease);
+}
+.cp-b--f { background: var(--a-primary); color: #fff; }
+.cp-win[data-night="1"] .cp-b--f { color: #121318; }
+.cp-b--o { background: transparent; border-color: var(--a-line-strong); color: var(--a-ink); }
+.cp-b--t { background: transparent; color: var(--a-primary); }
+.cp-b:hover { filter: brightness(.94); }
+.cp-b[disabled] { opacity: .45; cursor: default; filter: none; }
+.cp-b--grow { flex: 1; }
+.cp-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: cp-rot .7s linear infinite; }
+@keyframes cp-rot { to { transform: rotate(360deg); } }
+
+.cp-grp { border: 1px solid var(--a-line); border-radius: 12px; background: var(--a-surface-ch); padding: 12px; }
+.cp-grp__h { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; }
+.cp-grp__d { font-size: 11px; color: var(--a-muted); margin: 6px 0 10px; }
+
+.cp-sw { display: flex; align-items: center; gap: 12px; padding: 4px 0; cursor: pointer; }
+.cp-sw__b { width: 46px; height: 26px; border-radius: 999px; background: var(--a-surface-ch); border: 1px solid var(--a-line-strong); position: relative; flex: none; transition: background var(--cp-dur) var(--cp-ease); }
+.cp-sw__b::after { content: ""; position: absolute; top: 3px; left: 4px; width: 16px; height: 16px; border-radius: 50%; background: var(--a-muted); transition: transform var(--cp-dur) var(--cp-ease), background var(--cp-dur) var(--cp-ease); }
+.cp-sw.cp-on .cp-sw__b { background: var(--a-primary); border-color: var(--a-primary); }
+.cp-sw.cp-on .cp-sw__b::after { transform: translateX(19px); width: 20px; height: 20px; top: 2px; background: #fff; }
+.cp-win[data-night="1"] .cp-sw.cp-on .cp-sw__b::after { background: #121318; }
+.cp-sw__t { font-size: 13px; font-weight: 500; }
+.cp-sw__s { font-size: 11px; color: var(--a-muted); }
+
+.cp-rd { display: flex; align-items: center; gap: 10px; padding: 6px 0; cursor: pointer; font-size: 13px; }
+.cp-rd__c { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--a-line-strong); flex: none; position: relative; }
+.cp-rd.cp-on .cp-rd__c { border-color: var(--a-primary); }
+.cp-rd.cp-on .cp-rd__c::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--a-primary); }
+
+.cp-snap {
+  position: absolute; left: 50%; bottom: 14px; transform: translate(-50%, 16px);
+  background: #2b2b33; color: #fff; font-size: 12px; padding: 9px 14px; border-radius: 8px;
+  opacity: 0; pointer-events: none; transition: opacity var(--cp-dur) var(--cp-ease), transform var(--cp-dur) var(--cp-ease);
+  white-space: nowrap; max-width: 90%; overflow: hidden; text-overflow: ellipsis;
+}
+.cp-snap.cp-show { opacity: 1; transform: translate(-50%, 0); }
+.cp-status { font-size: 11px; color: var(--a-muted); margin-top: 10px; display: flex; align-items: center; gap: 6px; }
+.cp-status[hidden] { display: none; }
+.cp-status b { color: var(--a-ink); font-weight: 600; }
+.cp-prog { height: 4px; border-radius: 999px; background: var(--a-surface-ch); overflow: hidden; margin-top: 10px; }
+.cp-prog[hidden] { display: none; }
+.cp-prog i { display: block; height: 100%; width: 0; background: var(--a-primary); border-radius: 999px; transition: width 420ms linear; }
+
+/* ---------- WebUI 控制台演示 ---------- */
+.cp-cui { height: 608px; background: #14151a; color: #e4e1e9; padding: 16px 18px; overflow: hidden; display: flex; flex-direction: column; gap: 14px; text-align: left; }
+.cp-cui__bar { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #9a9aa6; }
+.cp-cui__url { flex: 1; background: #0d0e13; border: 1px solid #2e2e36; border-radius: 999px; padding: 6px 12px; font-family: var(--cp-mono); color: #bac3ff; }
+.cp-cui__card { background: #1b1c22; border: 1px solid #2a2b33; border-radius: 12px; padding: 14px 16px; }
+.cp-cui__hd { display: flex; align-items: center; gap: 10px; }
+.cp-cui__hd h5 { font-size: 15px; font-weight: 700; }
+.cp-cui__hd .cp-spacer { margin-left: auto; }
+.cp-cui__win { font-size: 11.5px; color: #9a9aa6; }
+.cp-cui__pct { font-size: 11.5px; font-weight: 700; color: #4caf50; background: rgba(76, 175, 80, .12); border-radius: 999px; padding: 3px 9px; }
+.cp-heat { display: flex; gap: 3px; margin-top: 14px; overflow: hidden; }
+.cp-heat__col { display: flex; flex-direction: column; gap: 3px; }
+.cp-heat__c { width: 20px; height: 9px; border-radius: 2px; background: #26272e; cursor: default; }
+.cp-heat__c[data-l="1"] { background: #b3352c; }
+.cp-heat__c[data-l="2"] { background: #d9822b; }
+.cp-heat__c[data-l="3"] { background: #7cb342; }
+.cp-heat__c[data-l="4"] { background: #2e9e4f; }
+.cp-heat__c.cp-hit { outline: 1.5px solid #bac3ff; outline-offset: 1px; }
+.cp-heat__lg { display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 11px; color: #9a9aa6; margin-top: 12px; }
+.cp-heat__lg .cp-heat__c { width: 10px; height: 10px; cursor: default; }
+.cp-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.cp-kpi { background: #1b1c22; border: 1px solid #2a2b33; border-radius: 12px; padding: 12px 14px; }
+.cp-kpi__k { font-size: 11.5px; color: #9a9aa6; }
+.cp-kpi__v { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.cp-kpi__v small { font-size: 12px; font-weight: 500; color: #9a9aa6; margin-left: 3px; }
+.cp-tips { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: #b7b7c2; }
+.cp-tips li { display: flex; align-items: center; gap: 8px; }
+.cp-tips code { font-family: var(--cp-mono); font-size: 11.5px; color: #bac3ff; }
+
+/* ---------- 托盘演示 ---------- */
+.cp-tray { height: 608px; background: var(--cp-surface); padding: 20px; display: flex; flex-direction: column; gap: 16px; text-align: left; }
+.cp-tray__desk { flex: 1; border-radius: 12px; background: linear-gradient(150deg, #eef0fa, #e2e6f6 60%, #dfe7f0); position: relative; overflow: hidden; border: 1px solid var(--cp-line); }
+.cp-tray__note { position: absolute; top: 18px; left: 20px; right: 20px; font-size: 12.5px; color: var(--cp-ink-2); }
+.cp-taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 40px; background: rgba(250, 250, 253, .92); border-top: 1px solid var(--cp-line-strong); display: flex; align-items: center; gap: 8px; padding: 0 10px; }
+.cp-taskbar__search { width: 150px; height: 26px; border-radius: 6px; border: 1px solid var(--cp-line-strong); background: #fff; font-size: 11.5px; color: var(--cp-muted); display: flex; align-items: center; padding: 0 8px; gap: 6px; }
+.cp-taskbar__right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.cp-tico { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; color: var(--cp-ink-2); background: transparent; border: 0; cursor: pointer; }
+.cp-tico:hover, .cp-tico.cp-on { background: rgba(81, 91, 146, .14); color: var(--cp-primary); }
+.cp-tmenu {
+  position: absolute; right: 10px; bottom: 46px; width: 176px; background: #fff;
+  border: 1px solid var(--cp-line-strong); border-radius: 10px; padding: 5px; box-shadow: 0 14px 34px rgba(27, 27, 33, .18);
+  opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none; transition: all var(--cp-dur) var(--cp-ease);
+}
+.cp-tmenu.cp-open { opacity: 1; transform: none; pointer-events: auto; }
+.cp-tmenu__i { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px 9px; border-radius: 7px; font-size: 12.5px; cursor: pointer; color: var(--cp-ink); }
+.cp-tmenu__i:hover { background: var(--cp-container); color: var(--cp-on-container); }
+.cp-tmenu__sep { height: 1px; background: var(--cp-line); margin: 5px 4px; }
+.cp-tray__cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cp-tray__card { border: 1px solid var(--a-line); border-radius: 12px; padding: 12px 14px; background: var(--a-surface-c); }
+.cp-tray__card h5 { font-size: 12.5px; font-weight: 700; }
+.cp-tray__card p { font-size: 11.5px; color: var(--a-muted); margin-top: 5px; }
+
+/* ================= 内容区 ================= */
+.cp-section { padding: 74px 0; }
+.cp-section__head { max-width: 760px; margin-bottom: 34px; }
+.cp-section__head h2 { font-size: clamp(22px, 3vw, 31px); letter-spacing: -.4px; line-height: 1.32; }
+.cp-section__head p { color: var(--cp-ink-2); margin-top: 12px; font-size: 15.5px; }
+.cp-features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 980px) { .cp-features { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .cp-features { grid-template-columns: 1fr; } }
+.cp-fcard { background: var(--cp-surface); border: 1px solid var(--cp-line); border-radius: 14px; padding: 20px; transition: transform var(--cp-dur) var(--cp-ease), box-shadow var(--cp-dur) var(--cp-ease), border-color var(--cp-dur) var(--cp-ease); }
+.cp-fcard:hover { transform: translateY(-3px); box-shadow: 0 14px 30px rgba(27, 27, 33, .09); border-color: var(--cp-container); }
+.cp-fcard__icon { width: 38px; height: 38px; border-radius: 10px; background: var(--cp-container); color: var(--cp-primary-deep); display: grid; place-items: center; }
+.cp-fcard h3 { font-size: 16px; margin-top: 14px; }
+.cp-fcard p { font-size: 13.5px; color: var(--cp-ink-2); margin-top: 8px; }
+.cp-fcard code { font-family: var(--cp-mono); font-size: 12.5px; background: var(--cp-surface-3); padding: 1px 5px; border-radius: 5px; }
+
+.cp-band { background: var(--cp-night); color: #e4e1e9; padding: 34px 0; }
+.cp-chips { display: flex; flex-wrap: wrap; gap: 9px; justify-content: center; }
+.cp-chipx { font-size: 12.5px; border: 1px solid #434659; border-radius: 999px; padding: 6px 13px; color: #c9c9d4; font-family: var(--cp-mono); }
+.cp-chipx--more { border-color: #bac3ff; color: #bac3ff; }
+
+.cp-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+@media (max-width: 860px) { .cp-steps { grid-template-columns: 1fr; } }
+.cp-step { background: var(--cp-surface); border: 1px solid var(--cp-line); border-radius: 14px; padding: 22px; position: relative; }
+.cp-step__n { width: 26px; height: 26px; border-radius: 8px; background: var(--cp-primary); color: #fff; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+.cp-step h3 { font-size: 16px; margin-top: 14px; }
+.cp-step p { font-size: 13.5px; color: var(--cp-ink-2); margin-top: 8px; }
+.cp-step code { font-family: var(--cp-mono); font-size: 12.5px; background: var(--cp-surface-2); border: 1px solid var(--cp-line); padding: 1px 5px; border-radius: 5px; }
+.cp-step__warn { margin-top: 12px; font-size: 12px; color: var(--cp-warning); background: rgba(179, 109, 0, .08); border-left: 2px solid var(--cp-warning); border-radius: 0 8px 8px 0; padding: 8px 10px; }
+
+.cp-faq { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 860px) { .cp-faq { grid-template-columns: 1fr; } }
+.cp-qa { background: var(--cp-surface); border: 1px solid var(--cp-line); border-radius: 12px; padding: 16px 18px; }
+.cp-qa h4 { font-size: 14.5px; display: flex; align-items: center; gap: 8px; }
+.cp-qa h4 i { width: 6px; height: 6px; border-radius: 50%; background: var(--cp-primary); flex: none; }
+.cp-qa p { font-size: 13px; color: var(--cp-ink-2); margin-top: 7px; }
+.cp-qa code { font-family: var(--cp-mono); font-size: 12px; background: var(--cp-surface-2); padding: 1px 5px; border-radius: 5px; }
+
+/* ---------- 下载 ---------- */
+.cp-cta { background: linear-gradient(140deg, #ffffff, #f1f2fd 55%, #e9ebfa); border: 1px solid var(--cp-line); border-radius: 18px; padding: 38px 30px; text-align: center; }
+.cp-cta h2 { font-size: clamp(21px, 2.6vw, 29px); letter-spacing: -.3px; }
+.cp-cta > p { color: var(--cp-ink-2); margin-top: 12px; font-size: 15px; }
+.cp-dl { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 26px; }
+.cp-dl__main { min-width: 268px; }
+.cp-dl__v { font-size: 12.5px; color: var(--cp-muted); min-height: 18px; }
+.cp-dl__v b { color: var(--cp-ink-2); font-weight: 600; }
+.cp-dl__alts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
+.cp-alt {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-family: var(--cp-mono);
+  border: 1px solid var(--cp-line-strong); background: rgba(255, 255, 255, .72); color: var(--cp-ink-2);
+  border-radius: 9px; padding: 7px 11px; cursor: pointer; transition: all var(--cp-dur) var(--cp-ease);
+}
+.cp-alt:hover { border-color: var(--cp-primary); color: var(--cp-primary); }
+.cp-alt.cp-here { border-color: var(--cp-primary); color: var(--cp-primary); background: var(--cp-container); font-weight: 600; }
+.cp-alt small { font-family: var(--cp-font); color: var(--cp-muted); }
+
+/* ---------- footer ---------- */
+.cp-footer { background: var(--cp-night); color: #c9c9d4; padding: 44px 0 22px; margin-top: 20px; }
+.cp-footer__grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 28px; }
+@media (max-width: 760px) { .cp-footer__grid { grid-template-columns: 1fr; } }
+.cp-footer .cp-brand { color: #fff; }
+.cp-footer p { font-size: 13px; margin-top: 12px; color: #9a9aa6; }
+.cp-footer h5 { font-size: 13px; color: #fff; margin-bottom: 12px; }
+.cp-footer ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 9px; font-size: 13px; }
+.cp-footer ul a { color: #9a9aa6; transition: color var(--cp-dur) var(--cp-ease); }
+.cp-footer ul a:hover { color: #bac3ff; }
+.cp-footer__bottom { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; border-top: 1px solid #2a2b33; margin-top: 30px; padding-top: 18px; font-size: 12.5px; color: #7d7d88; }
+@media (max-width: 700px) {
+  .cp-hero { padding-top: 40px; }
+  .cp-section { padding: 54px 0; }
+  .cp-cta { padding: 28px 18px; }
+}
+</style>
+<div id="cportal">
+
+  <header class="cp-nav">
+    <div class="cp-container cp-nav__inner">
+      <a class="cp-brand" href="#cp-top"><span class="cp-brand__mark" aria-hidden="true">C</span>CPAClient</a>
+      <nav class="cp-nav__links" aria-label="页面导航">
+        <a href="#cp-preview">界面预览</a><a href="#cp-features">功能</a><a href="#cp-tech">技术规格</a><a href="#cp-deploy">上手</a><a href="#cp-faq">常见问题</a><a href="#cp-download">下载</a>
+      </nav>
+      <a class="cp-nav__cta" href="#cp-download">获取安装包</a>
+    </div>
+  </header>
+
+  <main id="cp-top">
+    <section class="cp-hero">
+      <div class="cp-container cp-hero__inner">
+        <span class="cp-badge"><i aria-hidden="true"></i>核心、配置与统计全部留在你本机</span>
+        <h1>CLIProxyAPI 的命令行那一步，<br><em>交给一个会自己更新的桌面外壳</em></h1>
+        <p class="cp-hero__sub">CPAClient 替你下载核心、铺好 sandbox 配置、按系统架构挑对 Release 资产、管住启停与版本切换。配置一键备份到 WebDAV，统计数据每 60 秒落一次快照，重启核心也不丢 —— 你要做的，只是把代理地址填进自己的应用里。</p>
+        <div class="cp-actions">
+          <a class="cp-btn cp-btn--primary" href="#cp-download">获取安装包</a>
+          <button class="cp-btn cp-btn--ghost" type="button" id="cp-heroDemo">看界面怎么跑</button>
+        </div>
+        <p class="cp-hero__platforms">Windows / macOS / Linux × amd64 / arm64 共 6 个包一次发布 · 上游核心 <a href="https://github.com/router-for-me/CLIProxyAPI" target="_blank" rel="noopener" style="color:var(--cp-primary);font-weight:600">CLIProxyAPI</a> · GPL-3.0 开源</p>
+
+        <div class="cp-preview" id="cp-preview">
+          <div class="cp-tabs" role="tablist" aria-label="产品界面预览">
+            <button class="cp-tab cp-on" role="tab" id="cp-tabApp" data-pane="app" aria-selected="true" aria-controls="cp-paneApp">设置主界面</button>
+            <button class="cp-tab" role="tab" id="cp-tabWeb" data-pane="web" aria-selected="false" aria-controls="cp-paneWeb">核心 WebUI</button>
+            <button class="cp-tab" role="tab" id="cp-tabTray" data-pane="tray" aria-selected="false" aria-controls="cp-paneTray">托盘常驻</button>
+          </div>
+
+          <!-- ================= 设置主界面 ================= -->
+          <div class="cp-pane cp-on" id="cp-paneApp" role="tabpanel" aria-labelledby="cp-tabApp">
+            <div class="cp-stage" id="cp-stageApp">
+              <div class="cp-win" id="cp-winApp" data-night="0" role="group" aria-label="CPAClient 设置主界面可交互预览">
+                <div class="cp-win__bar">
+                  <span class="cp-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+                  <span class="cp-win__title">
+                    <svg width="13" height="13" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true"><rect width="32" height="32" rx="8"/></svg>
+                    CPAClient
+                  </span>
+                  <span class="cp-win__tools">
+                    <button class="cp-autodemo" type="button" id="cp-demoApp" title="按真实交互顺序自动演示一遍">自动演示</button>
+                    <button class="cp-autodemo" type="button" id="cp-nightBtn" aria-label="切换日间/夜间主题" title="切换日间 / 夜间主题">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+                    </button>
+                  </span>
+                </div>
+                <div class="cp-app">
+                  <div class="cp-app__side">
+                    <div class="cp-ov">
+                      <div class="cp-ov__t">核心概览</div>
+                      <div class="cp-ov__row"><span>核心版本</span><span class="cp-dot" id="cp-dotVer" data-s="on" aria-hidden="true"></span><span class="cp-ov__v" id="cp-ovVer">6.8.47</span></div>
+                      <div class="cp-ov__row"><span>当前端口</span><span class="cp-ov__v" id="cp-ovPort">8317</span></div>
+                      <div class="cp-ov__row"><span>运行时间</span><span class="cp-ov__v" id="cp-ovUp">01:24:07</span></div>
+                      <button class="cp-pill" type="button" id="cp-webuiPill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+                        WebUI
+                      </button>
+                    </div>
+                    <div class="cp-navc">
+                      <div class="cp-navc__t">设置导航</div>
+                      <button class="cp-navi cp-on" type="button" data-sec="core">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg>
+                        核心运行<span class="cp-dot" id="cp-dotCore" data-s="on" aria-hidden="true"></span>
+                      </button>
+                      <button class="cp-navi" type="button" data-sec="sec">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z"/></svg>
+                        安全访问
+                      </button>
+                      <button class="cp-navi" type="button" data-sec="pref">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg>
+                        应用偏好
+                      </button>
+                      <button class="cp-navi" type="button" data-sec="dav">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 9.5a3.8 3.8 0 0 1 1 7.4"/><path d="M12 12v6M9.5 15.5 12 18l2.5-2.5"/></svg>
+                        WebDav<span class="cp-dot" id="cp-dotDav" aria-hidden="true"></span>
+                      </button>
+                      <button class="cp-navi" type="button" data-sec="about">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.6v.4" stroke-linecap="round"/></svg>
+                        关于
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="cp-app__main" id="cp-appMain">
+                    <!-- 核心运行 -->
+                    <div class="cp-card" data-sec="core">
+                      <div class="cp-card__h">
+                        <span class="cp-card__ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg></span>
+                        <span><span class="cp-card__tt">核心运行</span><span class="cp-card__st" style="display:block">版本选择、进程控制与配置入口</span></span>
+                        <span class="cp-dot" id="cp-dotCard" data-s="on" aria-hidden="true"></span>
+                      </div>
+                      <div class="cp-card__body">
+                        <div class="cp-status" id="cp-statusLine" hidden><b>状态消息</b><span id="cp-statusMsg"></span></div>
+                        <div class="cp-field cp-select" style="margin-top:14px"><span class="cp-field__l">核心版本</span><span class="cp-field__v" id="cp-verVal">6.8.47</span></div>
+                        <div class="cp-help" id="cp-verHelp">当前已是最近版本</div>
+                        <div class="cp-lbl" style="margin-top:16px;display:block">运行操作</div>
+                        <div class="cp-row">
+                          <button class="cp-b cp-b--f" type="button" id="cp-btnUpdate">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 3v10"/><path d="m8 9 4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+                            <span id="cp-btnUpdateT">更新核心</span>
+                          </button>
+                          <button class="cp-b" type="button" id="cp-btnRestart">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2 6"/><path d="M20 5v6h-6"/></svg>
+                            重启核心
+                          </button>
+                          <button class="cp-b" type="button" id="cp-btnStop">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
+                            停止核心
+                          </button>
+                        </div>
+                        <div class="cp-prog" id="cp-prog" hidden><i id="cp-progBar"></i></div>
+                        <div class="cp-lbl" style="margin-top:16px;display:block">配置快捷入口</div>
+                        <div class="cp-row">
+                          <button class="cp-b cp-b--o cp-b--grow" type="button" data-stub="用系统默认程序打开 sandbox/config/config.yaml">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+                            打开 config.yaml
+                          </button>
+                          <button class="cp-b cp-b--o cp-b--grow" type="button" data-stub="打开 sandbox 配置目录">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                            打开配置目录
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 安全访问 -->
+                    <div class="cp-card" data-sec="sec">
+                      <div class="cp-card__h">
+                        <span class="cp-card__ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z"/></svg></span>
+                        <span><span class="cp-card__tt">安全访问</span><span class="cp-card__st" style="display:block">管理 GitHub Token 与 WebUI 密钥</span></span>
+                      </div>
+                      <div class="cp-card__body cp-stack">
+                        <div class="cp-grp">
+                          <div class="cp-grp__h"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-2 2"/></svg>GitHub Token</div>
+                          <p class="cp-grp__d">用于拉取 GitHub Release。支持本地加密保存或仅临时使用。</p>
+                          <div class="cp-field"><span class="cp-field__l">GitHub Token</span><span class="cp-field__v cp-field__v--dots" id="cp-tokenVal">••••••••••••••••••••••••</span>
+                            <button class="cp-field__eye" type="button" id="cp-tokenEye" aria-label="显示 Token">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                            </button>
+                          </div>
+                          <div class="cp-help">Token 需具备 repo 权限，用于获取核心版本列表</div>
+                          <div class="cp-sw cp-on" id="cp-keepToken" style="margin-top:10px"><span class="cp-sw__b"></span><span><span class="cp-sw__t">本地保持 Token</span><span class="cp-sw__s" style="display:block">关闭后将不在本地保留 Token</span></span></div>
+                          <div class="cp-row">
+                            <button class="cp-b cp-b--f" type="button" id="cp-btnToken">保存 Token</button>
+                            <button class="cp-b cp-b--t" type="button" data-stub="打开 github.com/settings/personal-access-tokens/new">去 GitHub 获取</button>
+                          </div>
+                        </div>
+                        <div class="cp-grp">
+                          <div class="cp-grp__h"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="10" width="18" height="10" rx="2"/><path d="M7 10V7a5 5 0 0 1 10 0v3"/></svg>WebUI 管理密钥</div>
+                          <p class="cp-grp__d">该密钥用于管理接口鉴权，并同步写入 remote-management.secret-key。</p>
+                          <div class="cp-field"><span class="cp-field__l">WebUI 密钥</span><span class="cp-field__v cp-field__v--dots">••••••••••••</span>
+                            <button class="cp-field__eye" type="button" aria-label="显示密钥">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                            </button>
+                          </div>
+                          <div class="cp-help">保存后会同步更新到 config.yaml 的 secret-key</div>
+                          <div class="cp-row"><button class="cp-b cp-b--f" type="button" data-stub="写入 config.yaml 的 remote-management.secret-key">保存 WebUI 密钥</button></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 应用偏好 -->
+                    <div class="cp-card" data-sec="pref">
+                      <div class="cp-card__h">
+                        <span class="cp-card__ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg></span>
+                        <span><span class="cp-card__tt">应用偏好</span><span class="cp-card__st" style="display:block">系统启动策略与主题模式</span></span>
+                      </div>
+                      <div class="cp-card__body cp-stack">
+                        <div class="cp-sw cp-on" id="cp-autostart"><span class="cp-sw__b"></span><span><span class="cp-sw__t">系统登录后自动启动 CPAClient</span><span class="cp-sw__s" style="display:block">仅在桌面环境中生效</span></span></div>
+                        <div>
+                          <div class="cp-field cp-select"><span class="cp-field__l">主题模式</span><span class="cp-field__v" id="cp-themeVal">随系统</span></div>
+                          <div class="cp-help">点一下可循环 随系统 / 日间 / 夜间，界面会即时生效</div>
+                        </div>
+                        <div>
+                          <span class="cp-lbl" style="display:block;margin-bottom:2px">关闭窗口行为</span>
+                          <div class="cp-rd cp-on" data-close="tray"><span class="cp-rd__c"></span>最小化到托盘</div>
+                          <div class="cp-rd" data-close="exit"><span class="cp-rd__c"></span>直接退出应用</div>
+                          <div class="cp-help">主题会即时生效；关闭窗口行为会保存到本地设置。</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- WebDAV -->
+                    <div class="cp-card" data-sec="dav">
+                      <div class="cp-card__h">
+                        <span class="cp-card__ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 9.5a3.8 3.8 0 0 1 1 7.4"/><path d="M12 12v6M9.5 15.5 12 18l2.5-2.5"/></svg></span>
+                        <span><span class="cp-card__tt">WebDAV 同步</span><span class="cp-card__st" style="display:block">远程备份、连接测试与一键还原</span></span>
+                        <span class="cp-dot" id="cp-dotDav2" aria-hidden="true"></span>
+                      </div>
+                      <div class="cp-card__body cp-stack">
+                        <div><div class="cp-field"><span class="cp-field__l">地址</span><span class="cp-field__v">https://dav.jianguoyun.com/dav</span></div><div class="cp-help">地址需以 https:// 开头，且不以 / 结尾</div></div>
+                        <div><div class="cp-field"><span class="cp-field__l">用户名</span><span class="cp-field__v">webdav-account@example.com</span></div><div class="cp-help">通常为 WebDAV 账号或邮箱</div></div>
+                        <div><div class="cp-field"><span class="cp-field__l">密码</span><span class="cp-field__v cp-field__v--dots">••••••••••••</span></div></div>
+                        <div class="cp-sw cp-on" id="cp-autobackup"><span class="cp-sw__b"></span><span class="cp-sw__t">自动备份（每 30 分钟）</span></div>
+                        <div class="cp-field cp-select"><span class="cp-field__l">自动备份间隔</span><span class="cp-field__v" id="cp-intervalVal">30 分钟</span></div>
+                        <div>
+                          <span class="cp-lbl" style="display:block">连接与同步操作</span>
+                          <div class="cp-row" style="margin-top:8px">
+                            <button class="cp-b cp-b--f" type="button" data-stub="保存地址、账号与密码到本地设置">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></svg>
+                              保存设置
+                            </button>
+                            <button class="cp-b" type="button" id="cp-btnTest">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 19.1a10 10 0 0 0 0-14.2"/></svg>
+                              测试连接
+                            </button>
+                            <button class="cp-b" type="button" id="cp-btnBackup">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 9.5a3.8 3.8 0 0 1 .8 7.4"/><path d="M12 18v-7M9.5 13.5 12 11l2.5 2.5"/></svg>
+                              <span id="cp-btnBackupT">立即备份</span>
+                            </button>
+                            <button class="cp-b" type="button" id="cp-btnRestore">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 12a8 8 0 1 1 8 8"/><path d="M4 8v4h4"/><path d="M12 9v3l2 2"/></svg>
+                              还原配置
+                            </button>
+                          </div>
+                        </div>
+                        <div class="cp-status" id="cp-davStatus"><b>WebDAV</b><span id="cp-davMsg">尚未测试 WebDAV 连接</span></div>
+                      </div>
+                    </div>
+
+                    <!-- 关于 -->
+                    <div class="cp-card" data-sec="about">
+                      <div class="cp-card__h">
+                        <span class="cp-card__ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.6v.4" stroke-linecap="round"/></svg></span>
+                        <span><span class="cp-card__tt">关于</span><span class="cp-card__st" style="display:block">项目入口与帮助链接</span></span>
+                      </div>
+                      <div class="cp-card__body">
+                        <div class="cp-grp">
+                          <span class="cp-lbl" style="display:block;margin-bottom:6px">版本信息</span>
+                          <div class="cp-ov__row"><span>应用版本</span><span class="cp-ov__v">0.1.6_17</span></div>
+                          <div class="cp-ov__row"><span>核心版本</span><span class="cp-ov__v" id="cp-aboutVer">6.8.47</span></div>
+                          <span class="cp-lbl" style="display:block;margin:12px 0 4px">项目仓库</span>
+                          <a href="https://github.com/AriaLyy/CPAClient" target="_blank" rel="noopener" style="font-size:13px;color:var(--a-primary);text-decoration:underline">https://github.com/AriaLyy/CPAClient</a>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="cp-snap" id="cp-snap" role="status" aria-live="polite"></div>
+              </div>
+            </div>
+            <p class="cp-hint">左侧导航、<b>更新核心</b>、<b>测试连接</b>、<b>立即备份</b>、<b>主题切换</b>全部可点 —— 交互顺序与真实应用一致，数据为示例</p>
+          </div>
+          <!-- ================= 核心 WebUI ================= -->
+          <div class="cp-pane" id="cp-paneWeb" role="tabpanel" aria-labelledby="cp-tabWeb">
+            <div class="cp-stage" id="cp-stageWeb">
+              <div class="cp-win" id="cp-winWeb" role="group" aria-label="核心管理控制台可交互预览">
+                <div class="cp-win__bar">
+                  <span class="cp-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+                  <span class="cp-win__title">核心管理控制台 · 由 CPAClient 一键打开</span>
+                  <span class="cp-win__tools"><button class="cp-autodemo" type="button" id="cp-demoWeb">自动演示</button></span>
+                </div>
+                <div class="cp-cui">
+                  <div class="cp-cui__bar">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+                    <span class="cp-cui__url">127.0.0.1:8317/management.html#/login</span>
+                  </div>
+                  <div class="cp-cui__card">
+                    <div class="cp-cui__hd">
+                      <h5>服务健康监测</h5>
+                      <span class="cp-spacer"></span>
+                      <span class="cp-cui__win">最近 7 天</span>
+                      <span class="cp-cui__pct" id="cp-cuiPct">94.1%</span>
+                    </div>
+                    <div class="cp-heat" id="cp-heat" role="img" aria-label="按小时聚合的请求热力图，示例数据"></div>
+                    <div class="cp-heat__lg">最早
+                      <span class="cp-heat__c" data-l="1"></span><span class="cp-heat__c" data-l="2"></span><span class="cp-heat__c" data-l="3"></span><span class="cp-heat__c" data-l="4"></span>
+                      最新<span style="margin-left:10px;color:#7d7d88" id="cp-heatTip">把鼠标放到格子上看时段</span>
+                    </div>
+                  </div>
+                  <div class="cp-cui__card">
+                    <div class="cp-cui__hd"><h5 style="font-size:13.5px">这块面板背后的数据，CPAClient 帮你兜住</h5></div>
+                    <ul class="cp-tips" style="margin:12px 0 0;padding:0;list-style:none">
+                      <li><span class="cp-dot" data-s="on"></span>核心每 <code>60</code> 秒导出一次统计快照到 <code>sandbox/config/usage.json</code></li>
+                      <li><span class="cp-dot" data-s="on"></span>重启 / 更新核心：停止前先导快照，就绪后 <code>10</code> 秒回灌，失败最多重试 <code>8</code> 次</li>
+                      <li><span class="cp-dot" data-s="on"></span>快照再经 WebDAV 的 <code>sync/&lt;版本&gt;/usage.zip</code> 在多端之间择优同步</li>
+                      <li><span class="cp-dot" data-s="run"></span>控制台本身由核心提供；CPAClient 负责密钥写入 <code>config.yaml</code> 与免记地址打开</li>
+                    </ul>
+                  </div>
+                </div>
+                <div class="cp-snap" id="cp-snapWeb" role="status"></div>
+              </div>
+            </div>
+            <p class="cp-hint">热力图为示例数据；统计口径与分档由核心控制台渲染，CPAClient 只负责把它打开并把数据留住</p>
+          </div>
+
+          <!-- ================= 托盘常驻 ================= -->
+          <div class="cp-pane" id="cp-paneTray" role="tabpanel" aria-labelledby="cp-tabTray">
+            <div class="cp-stage" id="cp-stageTray">
+              <div class="cp-win" id="cp-winTray" role="group" aria-label="系统托盘常驻可交互预览">
+                <div class="cp-win__bar">
+                  <span class="cp-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+                  <span class="cp-win__title">关闭窗口之后 · 任务栏右下角</span>
+                  <span class="cp-win__tools"><button class="cp-autodemo" type="button" id="cp-demoTray">自动演示</button></span>
+                </div>
+                <div class="cp-tray">
+                  <div class="cp-tray__desk">
+                    <p class="cp-tray__note" id="cp-trayNote">窗口关掉不等于退出：核心继续在后台跑，托盘图标还在。右键图标看菜单，左键单击直接把设置窗口拉回前台。</p>
+                    <div class="cp-tmenu" id="cp-tmenu" role="menu" aria-label="托盘菜单">
+                      <button class="cp-tmenu__i" type="button" role="menuitem" data-tray="webui">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>WebUI
+                      </button>
+                      <button class="cp-tmenu__i" type="button" role="menuitem" data-tray="settings">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>设置
+                      </button>
+                      <button class="cp-tmenu__i" type="button" role="menuitem" data-tray="stop">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>停止核心
+                      </button>
+                      <div class="cp-tmenu__sep"></div>
+                      <button class="cp-tmenu__i" type="button" role="menuitem" data-tray="exit">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4M6 12h10"/></svg>退出
+                      </button>
+                    </div>
+                    <div class="cp-taskbar">
+                      <span class="cp-taskbar__search">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+                        搜索
+                      </span>
+                      <span class="cp-taskbar__right">
+                        <button class="cp-tico" type="button" aria-label="网络"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 8.5a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16.5a5 5 0 0 1 6 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/></svg></button>
+                        <button class="cp-tico" type="button" aria-label="音量"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 9h3l4-3v12l-4-3H4z"/><path d="M16 8.5a4 4 0 0 1 0 7"/></svg></button>
+                        <button class="cp-tico" type="button" id="cp-trayIco" aria-label="CPAClient 托盘图标，点击展开菜单" title="点开托盘菜单">
+                          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="currentColor"/><text x="12" y="16.5" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#fff" text-anchor="middle">C</text></svg>
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="cp-tray__cards">
+                    <div class="cp-tray__card">
+                      <h5>关窗行为二选一</h5>
+                      <p><b>最小化到托盘</b>：只隐藏窗口（macOS 同时收起 Dock 图标）。<b>直接退出应用</b>：先停核心再退出，停不下来就不退，避免后台残留 <code style="font-family:var(--cp-mono);font-size:11px">cli-proxy-api</code> 进程。</p>
+                    </div>
+                    <div class="cp-tray__card">
+                      <h5>开机自启</h5>
+                      <p>以 <code style="font-family:var(--cp-mono);font-size:11px">--cpaclient-autostart</code> 参数拉起，登录后直接进托盘、不弹窗口；核心由应用按上次的版本与配置自行启动。</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="cp-snap" id="cp-snapTray" role="status"></div>
+              </div>
+            </div>
+            <p class="cp-hint">托盘菜单四项与真实实现一致：<b>WebUI / 设置 / 停止核心 / 退出</b>；点「停止核心」看看状态怎么变</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 功能 ================= -->
+    <section class="cp-section" id="cp-features">
+      <div class="cp-container">
+        <div class="cp-section__head">
+          <h2>代理本身够好了，难的是每天把它跑稳</h2>
+          <p>换架构要挑对包、改配置要重启、清一次 GitHub 限流能耗掉半小时。CPAClient 把这些琐碎收进一个 860×640 的窗口里，六件事各管一段。</p>
+        </div>
+        <div class="cp-features">
+          <div class="cp-fcard"><div class="cp-fcard__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3v10"/><path d="m8 9 4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div>
+            <h3>一键准备核心</h3><p>首次启动自动铺出 <code>sandbox/bin·config·tmp</code> 与默认 <code>config.yaml</code>，读运行时架构挑 <code>CLIProxyAPI_版本_系统_架构</code> 资产，解压后补 <code>chmod +x</code>；已有可执行文件就跳过，不重复下载。</p></div>
+          <div class="cp-fcard"><div class="cp-fcard__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg></div>
+            <h3>版本切换与热更新</h3><p>下拉列出上游最近 20 个版本，选完点「更新核心」即停核心、拉新包、再起；有新版本时输入框下方直接给提示。端口从 <code>config.yaml</code> 读，默认 <code>8317</code>。</p></div>
+          <div class="cp-fcard"><div class="cp-fcard__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg></div>
+            <h3>统计不会丢</h3><p>核心每 60 秒导出一次 usage 快照；重启或升级前先导后导，就绪 10 秒回灌、失败重试 8 次；刚启动的 20 秒锁住手动同步，避免把旧数据盖上去。</p></div>
+          <div class="cp-fcard"><div class="cp-fcard__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 9.5a3.8 3.8 0 0 1 1 7.4"/><path d="M12 11v6M9.5 14.5 12 12l2.5 2.5"/></svg></div>
+            <h3>配置备份到 WebDAV</h3><p>测试连接 / 立即备份 / 还原配置三个动作。<code>backup.zip</code> 装 <code>config.yaml</code> + <code>usage.json</code> + auth 目录凭据，远端自动分目录，最多留 20 版，按时间戳挑一个还原。</p></div>
+          <div class="cp-fcard"><div class="cp-fcard__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="2" y="4" width="13" height="9" rx="2"/><rect x="16" y="10" width="6" height="10" rx="2"/><path d="M6 17h5M8.5 13.5V17"/><path d="M12.5 8.5h6"/></svg></div>
+            <h3>多端同步用量</h3><p>家里和公司同一份统计：本地每 1 分钟检查、上传最短间隔 3 分钟；两边都改过就按时间戳择优，谁新听谁的，<code>sync/</code> 下最多留 100 个版本。</p></div>
+          <div class="cp-fcard"><div class="cp-fcard__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M9 20h6M12 16v4"/><circle cx="12" cy="10" r="2.4"/></svg></div>
+            <h3>常驻而不打扰</h3><p>托盘四项菜单、左键唤回窗口、关窗可选最小化或直接退（退之前必停核心）、登录后自启且不弹框；主题随系统 / 日间 / 夜间三档即时生效。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 技术规格 ================= -->
+    <div class="cp-band" id="cp-tech">
+      <div class="cp-container">
+        <div class="cp-chips" aria-label="技术规格">
+          <span class="cp-chipx">Flutter 3.35.5 + Dart</span><span class="cp-chipx">Material 3 · indigo seed</span><span class="cp-chipx">窗口 860×640</span>
+          <span class="cp-chipx">默认端口 8317</span><span class="cp-chipx">Dio 下载（连接 20s / 接收 5min）</span><span class="cp-chipx">archive 解压</span>
+          <span class="cp-chipx">WebDAV 客户端</span><span class="cp-chipx">快照间隔 60s</span><span class="cp-chipx">备份保留 20 版</span><span class="cp-chipx">usage 版本 100 份</span>
+          <span class="cp-chipx">版本列表 20 项</span><span class="cp-chipx">app.log 1MB 自动截断</span><span class="cp-chipx">限流退避 10→20→30 分钟</span>
+          <span class="cp-chipx cp-chipx--more">开源 · GPL-3.0</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= 上手 ================= -->
+    <section class="cp-section" id="cp-deploy">
+      <div class="cp-container">
+        <div class="cp-section__head"><h2>三步跑起来</h2><p>不用装 Docker、不用手搓命令行，第一次跑起来只需要一个 GitHub Token。</p></div>
+        <div class="cp-steps">
+          <div class="cp-step"><span class="cp-step__n">1</span><h3>装应用</h3><p>在 Releases 里挑对应架构的包解压运行：Windows <code>windows_amd64.zip</code> / <code>windows_arm64.zip</code>，macOS <code>darwin_*.tar.gz</code>，Linux <code>linux_*.tar.gz</code>。</p>
+            <div class="cp-step__warn">构建未做代码签名与公证，macOS 首次打开请按系统的放行提示操作。</div></div>
+          <div class="cp-step"><span class="cp-step__n">2</span><h3>配 Token</h3><p>首次启动会弹「需要 GitHub Token」。到 GitHub 建一个带 <code>repo</code> 权限的 Token 粘进去，版本列表与核心下载都靠它；不想留就用「本地保持 Token」开关，关掉即清空。</p></div>
+          <div class="cp-step"><span class="cp-step__n">3</span><h3>起核心、开 WebUI</h3><p>确认版本后应用会自动下载并启动核心，概览卡的圆点变绿即就绪；点「WebUI」直接进 <code>127.0.0.1:8317/management.html</code>，密钥同步写在 <code>config.yaml</code>。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 常见问题 ================= -->
+    <section class="cp-section" id="cp-faq" style="padding-top:0">
+      <div class="cp-container">
+        <div class="cp-section__head"><h2>卡住的时候，多半是这四件事</h2></div>
+        <div class="cp-faq">
+          <div class="cp-qa"><h4><i></i>拉取 Release 报 403</h4><p>匿名访问 GitHub API 很容易撞限流。配一个带 <code>repo</code> 权限的 Token 再试；没配 Token 时版本列表也只会退化成当前已装版本。</p></div>
+          <div class="cp-qa"><h4><i></i>WebUI 打不开</h4><p>先看概览卡的运行圆点，再核对端口是不是 <code>config.yaml</code> 里那个；应用侧日志在 <code>sandbox/app.log</code>，超过 1MB 会自动截断保留尾部。</p></div>
+          <div class="cp-qa"><h4><i></i>WebDAV 备份失败</h4><p>地址必须 <code>https://</code> 开头且不以 <code>/</code> 结尾，远端目录会自动追加 <code>/CpaClient</code>。命中服务端临时限流会按 10 → 20 → 30 分钟退避，不用一直点。</p></div>
+          <div class="cp-qa"><h4><i></i>统计数对不上</h4><p>刚启动或刚重启的 20 秒内手动同步是被锁住的，这是为了防止旧快照盖掉新数据；多端都改过时按时间戳择优，稍等一个同步节拍再看。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 下载 ================= -->
+    <section class="cp-section" id="cp-download" style="padding-top:0">
+      <div class="cp-container">
+        <div class="cp-cta">
+          <h2>把代理跑成一件不用管的事</h2>
+          <p>六个平台的安装包随 tag 一起发布；页面会自动认出你这台机器该下哪个。</p>
+          <div class="cp-dl">
+            <a class="cp-btn cp-btn--primary cp-dl__main" id="cp-dlMain" href="https://github.com/AriaLyy/CPAClient/releases" target="_blank" rel="noopener">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v11"/><path d="m7.5 10 4.5 4 4.5-4"/><path d="M4 19h16"/></svg>
+              <span id="cp-dlMainT">前往 Releases 下载</span>
+            </a>
+            <p class="cp-dl__v" id="cp-dlVer">正在读取最新版本…</p>
+            <div class="cp-dl__alts" id="cp-dlAlts" aria-label="各平台安装包"></div>
+          </div>
+          <div class="cp-actions" style="margin-top:22px">
+            <a class="cp-btn cp-btn--ghost" href="https://github.com/AriaLyy/CPAClient" target="_blank" rel="noopener">查看源码</a>
+            <a class="cp-btn cp-btn--ghost" href="https://github.com/router-for-me/CLIProxyAPI" target="_blank" rel="noopener">上游核心 CLIProxyAPI</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="cp-footer">
+    <div class="cp-container">
+      <div class="cp-footer__grid">
+        <div style="max-width:300px">
+          <a class="cp-brand" href="#cp-top"><span class="cp-brand__mark" aria-hidden="true">C</span>CPAClient</a>
+          <p style="margin-top:12px">CLIProxyAPI 的桌面外壳：核心自更新、配置可备份、统计不丢、托盘常驻。</p>
+        </div>
+        <div><h5>产品</h5><ul><li><a href="#cp-preview">界面预览</a></li><li><a href="#cp-features">功能特性</a></li><li><a href="#cp-deploy">上手方式</a></li><li><a href="#cp-faq">常见问题</a></li></ul></div>
+        <div><h5>资源</h5><ul>
+          <li><a href="https://github.com/AriaLyy/CPAClient" target="_blank" rel="noopener">源码仓库</a></li>
+          <li><a href="https://github.com/AriaLyy/CPAClient/releases" target="_blank" rel="noopener">安装包与更新日志</a></li>
+          <li><a href="https://github.com/AriaLyy/CPAClient/issues" target="_blank" rel="noopener">问题反馈</a></li>
+          <li><a href="https://github.com/router-for-me/CLIProxyAPI" target="_blank" rel="noopener">上游核心 CLIProxyAPI</a></li></ul></div>
+      </div>
+      <div class="cp-footer__bottom"><span>© 2026 CPAClient · AriaLyy · GPL-3.0</span><span>页面中的界面为可交互演示，数据为示例</span></div>
+    </div>
+  </footer>
+</div>
+<script>
+(function () {
+  'use strict';
+  var root = document.getElementById('cportal');
+  if (!root) return;
+  function $(id) { return document.getElementById(id); }
+  function all(sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); }
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var appRun = 0, webRun = 0, trayRun = 0;
+  function sleep(ms, run, got) {
+    return new Promise(function (r) { setTimeout(function () { r(run === got()); }, ms); });
+  }
+  function toast(el) {
+    var timer = null;
+    return function (msg) {
+      el.textContent = msg;
+      el.classList.add('cp-show');
+      clearTimeout(timer);
+      timer = setTimeout(function () { el.classList.remove('cp-show'); }, 2600);
+    };
+  }
+
+  /* ---------- 预览窗口按容器宽度等比缩放（内部几何保持 860×640 原值） ---------- */
+  var MOCK_W = 860;
+  function fit(stageSel, win) {
+    var stage = $(stageSel);
+    stage.style.width = '';
+    stage.style.height = '';
+    if (stage.offsetParent === null || !stage.clientWidth) {
+      // 隐藏的 pane 量不到宽度：先复位，等 tab 切换后的 refit 再量
+      win.style.transform = '';
+      return;
+    }
+    var scale = Math.min(1, stage.clientWidth / MOCK_W);
+    win.style.transform = 'scale(' + scale + ')';
+    stage.style.width = (MOCK_W * scale) + 'px';
+    stage.style.height = (win.offsetHeight * scale) + 'px';
+  }
+  function refit() {
+    fit('cp-stageApp', $('cp-winApp'));
+    fit('cp-stageWeb', $('cp-winWeb'));
+    fit('cp-stageTray', $('cp-winTray'));
+  }
+  window.addEventListener('resize', refit);
+
+  /* ---------- tabs ---------- */
+  function selectTab(name) {
+    all('.cp-tab').forEach(function (t) {
+      var on = t.dataset.pane === name;
+      t.classList.toggle('cp-on', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    all('.cp-pane').forEach(function (p) { p.classList.toggle('cp-on', p.id === 'cp-pane' + name.charAt(0).toUpperCase() + name.slice(1)); });
+    refit();
+  }
+  all('.cp-tab').forEach(function (t) {
+    t.addEventListener('click', function () { selectTab(t.dataset.pane); });
+  });
+
+  /* ---------- 应用界面：状态机 ---------- */
+  var app = $('cp-winApp');
+  var say = toast($('cp-snap'));
+  var state = { night: false, running: true, version: '6.8.47', dav: 'idle', busy: false };
+  var dots = ['cp-dotVer', 'cp-dotCore', 'cp-dotCard'];
+
+  function setRunning(on) {
+    state.running = on;
+    dots.forEach(function (id) { $(id).dataset.s = on ? 'on' : 'off'; });
+  }
+  function setStatus(msg) {
+    var line = $('cp-statusLine');
+    if (!msg) { line.hidden = true; return; }
+    line.hidden = false;
+    $('cp-statusMsg').textContent = msg;
+  }
+  function progress(p) {
+    var box = $('cp-prog');
+    if (p === null) { box.hidden = true; $('cp-progBar').style.width = '0'; return; }
+    box.hidden = false;
+    $('cp-progBar').style.width = p + '%';
+  }
+  function setBusy(b) {
+    state.busy = b;
+    ['cp-btnUpdate', 'cp-btnRestart', 'cp-btnStop'].forEach(function (id) { $(id).disabled = b; });
+  }
+
+  // 分区导航：五张卡片同列滚动，导航点击滚到对应卡片、滚动时反向高亮（与 settings_page 的滚动跟随一致）
+  var main = $('cp-appMain');
+  var navLock = 0;
+  function cardOf(key) { return all('.cp-app__main .cp-card').filter(function (c) { return c.dataset.sec === key; })[0]; }
+  function markNav(key) {
+    all('.cp-navi').forEach(function (x) { x.classList.toggle('cp-on', x.dataset.sec === key); });
+  }
+  function gotoSection(key, instant) {
+    var card = cardOf(key);
+    if (!card) return;
+    navLock = setTimeout(function () { navLock = 0; }, instant ? 60 : 700);
+    markNav(key);
+    // rect 是 transform 缩放后的值，scrollTop 是未缩放布局值，须按当前 scale 折算
+    var scale = parseFloat((/scale\(([\d.]+)\)/.exec(app.style.transform) || [])[1]) || 1;
+    var delta = (card.getBoundingClientRect().top - main.getBoundingClientRect().top) / scale;
+    main.scrollTo({ top: main.scrollTop + delta - 18, behavior: reduced || instant ? 'auto' : 'smooth' });
+  }
+  all('.cp-navi').forEach(function (b) {
+    b.addEventListener('click', function () { gotoSection(b.dataset.sec); });
+  });
+  main.addEventListener('scroll', function () {
+    if (navLock) return;
+    var top = main.getBoundingClientRect().top + 60, best = null, bestD = 1e9;
+    all('.cp-app__main .cp-card').forEach(function (c) {
+      var d = Math.abs(c.getBoundingClientRect().top - top);
+      if (d < bestD) { bestD = d; best = c.dataset.sec; }
+    });
+    if (best) markNav(best);
+  }, { passive: true });
+
+  // 主题：随系统 / 日间 / 夜间，与应用的 themeMode 三档一致
+  var themes = ['随系统', '日间', '夜间'];
+  var themeIdx = 0;
+  function applyTheme() {
+    state.night = themes[themeIdx] === '夜间';
+    app.dataset.night = state.night ? '1' : '0';
+    $('cp-themeVal').textContent = themes[themeIdx];
+  }
+  $('cp-nightBtn').addEventListener('click', function () {
+    themeIdx = (themeIdx + 1) % themes.length;
+    applyTheme();
+    say('主题模式已切到「' + themes[themeIdx] + '」，即时生效');
+  });
+  $('cp-themeVal').parentNode.addEventListener('click', function () {
+    themeIdx = (themeIdx + 1) % themes.length;
+    applyTheme();
+  });
+
+  // 开关与单选
+  all('.cp-sw').forEach(function (sw) {
+    sw.addEventListener('click', function () {
+      sw.classList.toggle('cp-on');
+      if (sw.id === 'cp-autobackup') {
+        var on = sw.classList.contains('cp-on');
+        sw.querySelector('.cp-sw__t').textContent = on ? '自动备份（每 30 分钟）' : '自动备份（已关闭）';
+        sw.nextElementSibling.hidden = !on;
+        if (on) return;
+      }
+      if (sw.id === 'cp-keepToken') say(sw.classList.contains('cp-on') ? 'Token 将加密保存在本地设置' : '已关闭本地保持，Token 即刻清空');
+      if (sw.id === 'cp-autostart') say(sw.classList.contains('cp-on') ? '登录系统后自动启动并直接进托盘' : '已关闭开机自启');
+    });
+  });
+  all('.cp-rd').forEach(function (rd) {
+    rd.addEventListener('click', function () {
+      all('.cp-rd').forEach(function (x) { x.classList.toggle('cp-on', x === rd); });
+      say(rd.dataset.close === 'tray' ? '关闭窗口只隐藏窗口，核心继续跑' : '关闭窗口会先停核心再退出应用');
+    });
+  });
+  var intervals = ['5 分钟', '10 分钟', '30 分钟', '1 小时', '6 小时', '1 天', '每次启动'];
+  var ivIdx = 2;
+  $('cp-intervalVal').parentNode.addEventListener('click', function () {
+    ivIdx = (ivIdx + 1) % intervals.length;
+    $('cp-intervalVal').textContent = intervals[ivIdx];
+    var sw = $('cp-autobackup');
+    if (sw.classList.contains('cp-on')) sw.querySelector('.cp-sw__t').textContent = '自动备份（' + (intervals[ivIdx] === '每次启动' ? '每次启动' : '每 ' + intervals[ivIdx]) + '）';
+  });
+  $('cp-tokenEye').addEventListener('click', function () {
+    var v = $('cp-tokenVal');
+    var shown = v.textContent.indexOf('•') === -1;
+    v.textContent = shown ? '••••••••••••••••••••••••' : 'github_pat_11A0…（示例）';
+    this.setAttribute('aria-label', shown ? '显示 Token' : '隐藏 Token');
+  });
+  all('[data-stub]').forEach(function (b) {
+    b.addEventListener('click', function () { say(b.dataset.stub); });
+  });
+  $('cp-webuiPill').addEventListener('click', function () {
+    selectTab('web');
+    $('cp-preview').scrollIntoView({ block: 'center', behavior: reduced ? 'auto' : 'smooth' });
+    say(state.running ? '已用系统浏览器打开 127.0.0.1:8317/management.html' : '核心未运行，WebUI 打不开');
+  });
+
+  function setVersion(v) {
+    state.version = v;
+    $('cp-ovVer').textContent = v;
+    $('cp-verVal').textContent = v;
+    $('cp-aboutVer').textContent = v;
+  }
+  function setHelp(text, up) {
+    var h = $('cp-verHelp');
+    h.textContent = text;
+    h.classList.toggle('cp-help--up', !!up);
+  }
+
+  // 更新核心：导出快照 → 停核心 → 拉包 → 解压启动 → 回灌快照（与 startup_service 顺序一致）
+  function updateCore(run, got) {
+    if (state.busy) return Promise.resolve();
+    var next = '6.9.14';
+    setBusy(true);
+    $('cp-btnUpdateT').textContent = '更新中...';
+    $('cp-btnUpdate').insertAdjacentHTML('afterbegin', '<span class="cp-spin" id="cp-spinU"></span>');
+    setHelp('正在更新到 ' + next + '…', true);
+    var steps = [
+      ['导出统计快照 usage.json', 12, 900],
+      ['停止核心进程', 26, 700],
+      ['下载 CLIProxyAPI_' + next + '_windows_amd64.zip', 62, 1400],
+      ['解压到 sandbox/bin 并置为可执行', 80, 800],
+      ['启动核心，端口 8317', 94, 900]
+    ];
+    return steps.reduce(function (chain, s) {
+      return chain.then(function (alive) {
+        if (!alive) return false;
+        setStatus(s[0]);
+        progress(s[1]);
+        if (s[0].indexOf('停止') === 0) setRunning(false);
+        if (s[0].indexOf('启动') === 0) setRunning(true);
+        return sleep(s[2], run, got);
+      });
+    }, Promise.resolve(true)).then(function (alive) {
+      if (!alive) return;
+      progress(100);
+      setVersion(next);
+      setHelp('当前已是最近版本', false);
+      setStatus('');
+      setTimeout(function () { progress(null); }, 400);
+      $('cp-spinU') && $('cp-spinU').remove();
+      $('cp-btnUpdateT').textContent = '更新核心';
+      setBusy(false);
+      say('核心已更新至 ' + next + '，统计快照已回灌');
+    });
+  }
+  function restartCore(run, got) {
+    if (state.busy) return Promise.resolve();
+    setBusy(true);
+    setStatus('导出快照 → 停止 → 启动 → 10 秒后回灌统计');
+    setRunning(false);
+    $('cp-dotCore').dataset.s = 'run';
+    return sleep(1500, run, got).then(function (alive) {
+      if (!alive) return;
+      setRunning(true);
+      setStatus('');
+      setBusy(false);
+      say('核心已重启，统计数据未丢失');
+    });
+  }
+  function stopCore() {
+    if (state.busy) return;
+    setRunning(false);
+    setStatus('核心进程已停止');
+    say('核心已停止，托盘图标仍在后台常驻');
+    setTimeout(function () { setStatus(''); }, 2600);
+  }
+  $('cp-btnUpdate').addEventListener('click', function () { updateCore(appRun, function () { return appRun; }); });
+  $('cp-btnRestart').addEventListener('click', function () { restartCore(appRun, function () { return appRun; }); });
+  $('cp-btnStop').addEventListener('click', stopCore);
+
+  // WebDAV 状态灯：idle / running / success / failure（与 WebdavStatusLevel 一致）
+  var davSay = $('cp-davMsg'), davDot = [$('cp-dotDav'), $('cp-dotDav2')];
+  function setDav(level, msg) {
+    state.dav = level;
+    davSay.textContent = msg;
+    davDot.forEach(function (d) { d.dataset.s = level === 'success' ? 'on' : level === 'failure' ? 'off' : level === 'running' ? 'run' : ''; });
+  }
+  function testDav(run, got) {
+    gotoSection('dav');
+    setDav('running', '正在连接…');
+    return sleep(1200, run, got).then(function (alive) {
+      if (!alive) return;
+      setDav('success', '连接成功 · 远端目录 /CpaClient 已就绪');
+      say('WebDAV 连接测试通过');
+    });
+  }
+  function backup(run, got) {
+    gotoSection('dav');
+    setDav('running', '正在打包 config.yaml + usage.json + auth 凭据…');
+    $('cp-btnBackupT').textContent = '备份中...';
+    return sleep(1700, run, got).then(function (alive) {
+      if (!alive) return;
+      $('cp-btnBackupT').textContent = '立即备份';
+      setDav('success', '备份完成 · backups/20261026T091204Z/backup.zip');
+      say('已上传备份，本地保留最近 20 版');
+    });
+  }
+  function restore(run, got) {
+    gotoSection('dav');
+    setDav('running', '下载 backup.zip → 覆盖配置 → 重启核心 → 回灌统计');
+    return sleep(1900, run, got).then(function (alive) {
+      if (!alive) return;
+      setDav('success', '已还原 backups/20261026T091204Z 并重启核心');
+      say('还原完成，核心已按还原后的配置重启');
+    });
+  }
+  $('cp-btnTest').addEventListener('click', function () { testDav(appRun, function () { return appRun; }); });
+  $('cp-btnBackup').addEventListener('click', function () { backup(appRun, function () { return appRun; }); });
+  $('cp-btnRestore').addEventListener('click', function () { restore(appRun, function () { return appRun; }); });
+
+  /* ---------- 核心 WebUI：热力图 ---------- */
+  var heat = $('cp-heat'), heatTip = $('cp-heatTip');
+  (function buildHeat() {
+    var seed = 20261026;
+    function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >> 8) % 1000 / 1000; }
+    var base = new Date(2026, 9, 20);
+    for (var h = 0; h < 24; h++) {
+      var col = document.createElement('div');
+      col.className = 'cp-heat__col';
+      for (var d = 0; d < 7; d++) {
+        var c = document.createElement('span');
+        c.className = 'cp-heat__c';
+        var r = rnd();
+        var quiet = h < 6 || (d >= 5 && h < 10);
+        var lvl = quiet ? (r > 0.86 ? 1 : 0) : (r > 0.9 ? 1 : r > 0.62 ? 2 : r > 0.34 ? 3 : 4);
+        if (lvl) c.dataset.l = lvl;
+        var day = new Date(base.getTime() + d * 864e5);
+        var label = ('0' + (day.getMonth() + 1)).slice(-2) + '/' + ('0' + day.getDate()).slice(-2);
+        var from = ('0' + h).slice(-2) + ':00', to = ('0' + ((h + 1) % 24)).slice(-2) + ':00';
+        c.dataset.tip = label + ' ' + from + ' – ' + to + ' · ' + (lvl ? (lvl * 7 + Math.round(rnd() * 9)) + ' 次请求' : '无请求');
+        c.addEventListener('mouseenter', function () {
+          heatTip.textContent = this.dataset.tip;
+          all('.cp-heat__c.cp-hit').forEach(function (x) { x.classList.remove('cp-hit'); });
+          this.classList.add('cp-hit');
+        });
+        col.appendChild(c);
+      }
+      heat.appendChild(col);
+    }
+  })();
+
+  /* ---------- 托盘 ---------- */
+  var trayMenu = $('cp-tmenu'), trayIco = $('cp-trayIco');
+  var sayTray = toast($('cp-snapTray'));
+  function openMenu(on) {
+    trayMenu.classList.toggle('cp-open', on);
+    trayIco.classList.toggle('cp-on', on);
+  }
+  trayIco.addEventListener('click', function (e) { e.stopPropagation(); openMenu(!trayMenu.classList.contains('cp-open')); });
+  trayMenu.addEventListener('click', function (e) { e.stopPropagation(); });
+  document.addEventListener('click', function () { openMenu(false); });
+  function trayAction(key) {
+    var map = {
+      webui: '打开 http://127.0.0.1:8317/management.html#/login',
+      settings: '左键单击即唤回并聚焦设置窗口',
+      stop: '核心进程已停止（托盘仍在，随时可再起）',
+      exit: '退出前先停核心 → 应用与托盘图标一起消失'
+    };
+    sayTray(map[key] || key);
+    if (key === 'stop' || key === 'exit') {
+      $('cp-trayNote').textContent = key === 'stop'
+        ? '核心停了，但应用还在：托盘菜单里再点「设置」回去，随时可以重新拉起核心。'
+        : '这就是「直接退出应用」的效果：先停核心再退出，后台不留残留进程。';
+      trayIco.style.opacity = key === 'exit' ? '.35' : '1';
+    }
+  }
+  all('[data-tray]').forEach(function (b) {
+    b.addEventListener('click', function () { openMenu(false); trayAction(b.dataset.tray); });
+  });
+
+  /* ---------- 自动演示 ---------- */
+  function demoApp() {
+    appRun++;
+    var run = appRun;
+    var got = function () { return appRun; };
+    selectTab('app');
+    gotoSection('core');
+    setHelp('检测到新版本 6.9.14，可点击「更新核心」升级', true);
+    return sleep(900, run, got)
+      .then(function (a) { return a && updateCore(run, got); })
+      .then(function () { return sleep(700, run, got); })
+      .then(function (a) { return a && restartCore(run, got); })
+      .then(function () { return sleep(1400, run, got); })
+      .then(function (a) { return a && testDav(run, got); })
+      .then(function () { return sleep(1000, run, got); })
+      .then(function (a) { return a && backup(run, got); })
+      .then(function () { return sleep(1400, run, got); })
+      .then(function (a) { if (a) { gotoSection('dav'); say('演示结束 —— 这些按钮在真实应用里做的是同一串动作'); } });
+  }
+  function demoWeb() {
+    webRun++;
+    var run = webRun, got = function () { return webRun; };
+    selectTab('web');
+    var cells = all('.cp-heat__col:nth-child(n+10):nth-child(-n+16) .cp-heat__c[data-l="4"]');
+    var i = 0;
+    (function step() {
+      if (run !== got() || i >= cells.length) return;
+      all('.cp-heat__c.cp-hit').forEach(function (x) { x.classList.remove('cp-hit'); });
+      cells[i].classList.add('cp-hit');
+      heatTip.textContent = cells[i].dataset.tip;
+      i++;
+      setTimeout(step, reduced ? 0 : 110);
+    })();
+  }
+  function demoTray() {
+    trayRun++;
+    var run = trayRun, got = function () { return trayRun; };
+    selectTab('tray');
+    openMenu(true);
+    sleep(1400, run, got).then(function (a) {
+      if (!a) return;
+      openMenu(false);
+      trayAction('stop');
+      return sleep(1800, run, got);
+    }).then(function (a) {
+      if (!a) return;
+      openMenu(true);
+      return sleep(1600, run, got);
+    }).then(function (a) {
+      if (!a) return;
+      openMenu(false);
+      trayAction('settings');
+    });
+  }
+  function wireDemo(id, fn) {
+    var btn = $(id);
+    btn.addEventListener('click', function () {
+      if (btn.classList.contains('cp-busy')) {
+        appRun++; webRun++; trayRun++;
+        btn.classList.remove('cp-busy');
+        btn.textContent = '自动演示';
+        return;
+      }
+      btn.classList.add('cp-busy');
+      btn.textContent = '演示中…';
+      fn();
+      setTimeout(function () {
+        if (!btn.classList.contains('cp-busy')) return;
+        btn.classList.remove('cp-busy');
+        btn.textContent = '自动演示';
+      }, 12000);
+    });
+  }
+  wireDemo('cp-demoApp', demoApp);
+  wireDemo('cp-demoWeb', demoWeb);
+  wireDemo('cp-demoTray', demoTray);
+  $('cp-heroDemo').addEventListener('click', function () {
+    $('cp-preview').scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
+    demoApp();
+  });
+
+  /* ---------- 运行时间走秒 ---------- */
+  var up = 5047;
+  setInterval(function () {
+    up++;
+    var h = Math.floor(up / 3600), m = Math.floor(up % 3600 / 60), s = up % 60;
+    $('cp-ovUp').textContent = (h > 24 ? Math.floor(h / 24) + '天 ' : '') +
+      ('0' + (h > 24 ? h % 24 : h)).slice(-2) + ':' + ('0' + m).slice(-2) + ':' + ('0' + s).slice(-2);
+  }, 1000);
+
+  /* ---------- 下载：运行时向 GitHub Releases 取最新资产 ---------- */
+  var REPO = 'AriaLyy/CPAClient';
+  var RELEASES = 'https://github.com/' + REPO + '/releases';
+  var PKGS = [
+    { key: 'windows_amd64.zip', label: 'Windows x64' },
+    { key: 'windows_arm64.zip', label: 'Windows ARM64' },
+    { key: 'darwin_arm64.tar.gz', label: 'macOS Apple 芯片' },
+    { key: 'darwin_amd64.tar.gz', label: 'macOS Intel' },
+    { key: 'linux_amd64.tar.gz', label: 'Linux x64' },
+    { key: 'linux_arm64.tar.gz', label: 'Linux ARM64' }
+  ];
+  // Chromium 的 UA 在 Apple 芯片上仍写 "Intel Mac OS X"，所以优先取高熵 arch，拿不到才回退 UA 猜测
+  function guessPkg() {
+    var ua = navigator.userAgent || '';
+    var uad = navigator.userAgentData;
+    return Promise.resolve(
+      uad && uad.getHighEntropyValues ? uad.getHighEntropyValues(['platform', 'arch']) : null
+    ).then(function (hi) {
+      var plat = (hi && hi.platform) || (uad && uad.platform) || '';
+      var arch = (hi && hi.arch) || '';
+      if (!arch) arch = /arm64|aarch64/i.test(ua) ? 'arm64' : 'x86';
+      var os = /Windows|Win32/i.test(plat + ua) ? 'windows'
+        : /Mac/i.test(plat + ua) ? 'darwin' : 'linux';
+      var cpu = /arm/i.test(arch) ? 'arm64' : 'amd64';
+      return os + '_' + cpu + (os === 'windows' ? '.zip' : '.tar.gz');
+    });
+  }
+  function render(assets, tag, mine) {
+    var main = $('cp-dlMain'), mainT = $('cp-dlMainT'), ver = $('cp-dlVer'), alts = $('cp-dlAlts');
+    alts.innerHTML = '';
+    var hit = assets[mine];
+    var label = (PKGS.filter(function (p) { return p.key === mine; })[0] || {}).label;
+    if (hit) {
+      main.href = hit;
+      mainT.textContent = '下载 ' + label + (tag ? ' ' + tag.replace(/^v/, '') : '');
+    } else {
+      main.href = RELEASES;
+      mainT.textContent = '前往 Releases 下载';
+    }
+    ver.innerHTML = tag ? ('最新版 <b>' + tag + '</b> · 六个平台资产已就位') : '未取到版本信息，按钮指向 Releases 页';
+    PKGS.forEach(function (p) {
+      var a = document.createElement('a');
+      a.className = 'cp-alt' + (p.key === mine ? ' cp-here' : '');
+      a.href = assets[p.key] || RELEASES;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.innerHTML = p.label + (p.key === mine ? ' <small>本机</small>' : '') + '<small>' + p.key + '</small>';
+      alts.appendChild(a);
+    });
+  }
+  function load() {
+    var cached = null;
+    try { cached = JSON.parse(sessionStorage.getItem('cpa-rel') || 'null'); } catch (e) {}
+    guessPkg().then(function (mine) {
+      if (cached && cached.assets) { render(cached.assets, cached.tag, mine); return; }
+      return fetch('https://api.github.com/repos/' + REPO + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+        .then(function (j) {
+          var assets = {};
+          (j.assets || []).forEach(function (a) { assets[a.name] = a.browser_download_url; });
+          try { sessionStorage.setItem('cpa-rel', JSON.stringify({ assets: assets, tag: j.tag_name })); } catch (e) {}
+          render(assets, j.tag_name, mine);
+        });
+    }).catch(function () {
+      $('cp-dlVer').innerHTML = '没取到 GitHub API（离线或被限流）—— 按钮已回落到 <b>Releases 页</b>';
+      guessPkg().then(function (mine) { render({}, '', mine); });
+    });
+  }
+
+  applyTheme();
+  setDav('idle', '尚未测试 WebDAV 连接');
+  refit();
+  load();
+})();
+</script>
+</body>
+</html>

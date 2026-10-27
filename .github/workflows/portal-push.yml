@@ -1,0 +1,86 @@
+# portal-push — tag 触发的 TaiChi 门户推送：把产品介绍门户的单页 HTML 推为门户草稿。
+#
+#   web_t_X.Y.Z*  → 测试环境  API https://taichi-api.dddo.top:666   门户 https://taichi.dddo.top:666
+#   web_v_X.Y.Z   → 正式环境  API https://oecho-api.dddo.top        门户 https://oecho.dddo.top
+#
+# 推送只写「草稿」，线上副本不动；对外可见要到 TaiChi 管理后台「门户管理」→ 该门户 →「发布」。
+# 同一应用重复推送即覆盖草稿，重推同一 tag（删后重建再推）是安全的。
+#
+# 页面不构建：portal/index.html 是仓库里自包含的单页（内联 CSS/JS），直接读文件推送。
+# 页面里的下载地址不由 CI 改写：运行时请求 GitHub Releases API
+# repos/AriaLyy/CPAClient/releases/latest 取各平台 browser_download_url，取不到回落 Releases 页。
+#
+# 与 v* tag（release.yml 出六平台包）互不干扰：web_v_* 以 w 开头，不匹配 v*。
+#
+# 凭证（2026-10-27 用户拍板）：测试环境 App Id/Secret 内联在本文件——虽然仓库公开，
+# 但这是测试环境凭证，泄露的处置就是在 TaiChi 后台重置密钥后改这里；正式环境凭证
+# 绝不内联，仍走仓库 Secrets（缺键快速失败并点名）。
+#   PORTAL_APP_ID_PROD / PORTAL_APP_SECRET_PROD   oecho 正式环境（待下发）
+# 注意：测试凭证写成字面量，不要改成 ${{ secrets.* }}——Secret 缺失时的空串会盖掉内联值。
+# GitHub 托管 runner 没有 clash 代理环境变量，QCopy 记录的 taichi:666 CONNECT 失败是
+# 其 NAS runner 的环境问题，这里不需要 no_proxy 补丁。
+
+name: portal-push
+
+on:
+  push:
+    tags:
+      - 'web_v_[0-9]+.[0-9]+.[0-9]+'
+      - 'web_t_[0-9]+.[0-9]+.[0-9]+*'
+
+# 串行推草稿：两次推送同打到同一 TaiChi 应用，乱序覆盖没有意义。
+concurrency:
+  group: portal-push
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  push:
+    name: Push portal HTML
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HTML_PATH: portal/index.html
+      # 测试环境凭证内联（见头部说明）；正式仍走仓库 Secrets
+      PORTAL_APP_ID_TEST: com.zozo101.cpaClient
+      PORTAL_APP_SECRET_TEST: j44GmHm4SvXNkZmv6w9DOdp3uwTVOcwmabGCV_10jnY
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push to portal
+        env:
+          # 只引用正式环境的 Secrets——若把测试两个键也写成 ${{ secrets.* }}，
+          # Secret 缺失时的空串会盖掉上面内联的测试凭证
+          PORTAL_APP_ID_PROD: ${{ secrets.PORTAL_APP_ID_PROD }}
+          PORTAL_APP_SECRET_PROD: ${{ secrets.PORTAL_APP_SECRET_PROD }}
+        run: |
+          set -euo pipefail
+          # 环境与凭证成对选定：两个 TaiChi 实例独立部署，App Id/Secret 互不通用。
+          case "${GITHUB_REF_NAME}" in
+            web_t_*)
+              API_BASE=https://taichi-api.dddo.top:666
+              PORTAL_BASE=https://taichi.dddo.top:666
+              SECRET_SUFFIX=TEST
+              APP_ID="${PORTAL_APP_ID_TEST:-}"
+              APP_SECRET="${PORTAL_APP_SECRET_TEST:-}"
+              ;;
+            web_v_*)
+              API_BASE=https://oecho-api.dddo.top
+              PORTAL_BASE=https://oecho.dddo.top
+              SECRET_SUFFIX=PROD
+              APP_ID="${PORTAL_APP_ID_PROD:-}"
+              APP_SECRET="${PORTAL_APP_SECRET_PROD:-}"
+              ;;
+            *) echo "::error::意外的标签: ${GITHUB_REF_NAME}（只认 web_t_* / web_v_*）"; exit 1 ;;
+          esac
+          if [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ]; then
+            echo "::error::仓库 Secrets 缺 PORTAL_APP_ID_${SECRET_SUFFIX} / PORTAL_APP_SECRET_${SECRET_SUFFIX}（${GITHUB_REF_NAME} 要推 $PORTAL_BASE）。到 Settings → Secrets and variables → Actions 补配后重推该 tag。"
+            exit 1
+          fi
+
+          X_APP_ID="$APP_ID" X_APP_SECRET="$APP_SECRET" \
+            bash .github/scripts/push-portal.sh "$API_BASE" "$HTML_PATH"
+
+          echo "草稿已更新（${GITHUB_REF_NAME} → $API_BASE）。到 TaiChi 管理后台「门户管理」预览后点「发布」才对外可见：$PORTAL_BASE"
